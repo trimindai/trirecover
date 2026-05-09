@@ -27,12 +27,11 @@ use ::windows::Win32::Foundation::{CloseHandle, GENERIC_READ, HANDLE, INVALID_HA
 use ::windows::Win32::Storage::FileSystem::{
     CreateFileW, ReadFile, SetFilePointerEx, FILE_ATTRIBUTE_NORMAL, FILE_BEGIN,
     FILE_FLAG_NO_BUFFERING, FILE_FLAG_RANDOM_ACCESS, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    OPEN_EXISTING,
+    OPEN_EXISTING, STORAGE_BUS_TYPE,
 };
 use ::windows::Win32::System::Ioctl::{
     DISK_GEOMETRY_EX, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, IOCTL_STORAGE_QUERY_PROPERTY,
-    STORAGE_BUS_TYPE, STORAGE_DEVICE_DESCRIPTOR, STORAGE_PROPERTY_QUERY,
-    STORAGE_QUERY_TYPE,
+    STORAGE_DEVICE_DESCRIPTOR, STORAGE_PROPERTY_QUERY, STORAGE_QUERY_TYPE,
 };
 use ::windows::Win32::System::IO::DeviceIoControl;
 
@@ -184,12 +183,6 @@ struct DescriptorOut {
     bus: DriveBus,
 }
 
-impl Default for DriveBus {
-    fn default() -> Self {
-        DriveBus::Unknown
-    }
-}
-
 fn get_storage_descriptor(h: HANDLE) -> Option<(String, String, DriveBus)> {
     let mut query = STORAGE_PROPERTY_QUERY {
         PropertyId: ::windows::Win32::System::Ioctl::StorageDeviceProperty,
@@ -241,14 +234,16 @@ fn get_storage_descriptor(h: HANDLE) -> Option<(String, String, DriveBus)> {
 }
 
 fn map_bus(bus: STORAGE_BUS_TYPE) -> DriveBus {
-    use ::windows::Win32::System::Ioctl as ioctl;
-    match bus {
-        ioctl::BusTypeNvme => DriveBus::Nvme,
-        ioctl::BusTypeSata => DriveBus::Sata,
-        ioctl::BusTypeUsb => DriveBus::Usb,
-        ioctl::BusTypeSd | ioctl::BusTypeMmc => DriveBus::Sd,
-        ioctl::BusTypeScsi | ioctl::BusTypeSas => DriveBus::Scsi,
-        ioctl::BusTypeVirtual | ioctl::BusTypeFileBackedVirtual => DriveBus::Virtual,
+    // Match on the integer values from Microsoft's STORAGE_BUS_TYPE enum
+    // (winioctl.h). windows-rs has churned these symbol paths across
+    // versions, so matching on the i32 inner value is the stable choice.
+    match bus.0 {
+        17 => DriveBus::Nvme,                  // BusTypeNvme
+        11 => DriveBus::Sata,                  // BusTypeSata
+        7 => DriveBus::Usb,                    // BusTypeUsb
+        12 | 13 => DriveBus::Sd,               // BusTypeSd | BusTypeMmc
+        1 | 10 => DriveBus::Scsi,              // BusTypeScsi | BusTypeSas
+        14 | 15 => DriveBus::Virtual,          // BusTypeVirtual | BusTypeFileBackedVirtual
         _ => DriveBus::Unknown,
     }
 }

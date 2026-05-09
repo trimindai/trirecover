@@ -88,7 +88,7 @@ pub enum DriveKind {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum DriveBus {
     Sata,
@@ -97,6 +97,7 @@ pub enum DriveBus {
     Sd,
     Scsi,
     Virtual,
+    #[default]
     Unknown,
 }
 
