@@ -1,0 +1,45 @@
+name: CI
+
+# Build + test on every push/PR. Linux runs the workspace minus
+# `trirecover-app` (which needs Tauri/WebView). Windows runs everything
+# including a full Tauri debug build to catch regressions before tagging.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build (workspace minus tauri app)
+        run: cargo build --workspace --exclude trirecover-app --locked
+      - name: Test (workspace minus tauri app)
+        run: cargo test --workspace --exclude trirecover-app --locked
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            src-tauri
+      - name: Build full workspace (debug)
+        run: cargo build --workspace --locked
+      - name: Test
+        run: cargo test --workspace --locked

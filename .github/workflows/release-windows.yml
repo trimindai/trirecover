@@ -1,0 +1,54 @@
+name: Release Windows
+
+# Build the TriRecover Tauri app for Windows and attach the installers
+# (NSIS .exe + .msi) to a GitHub Release. Triggered by pushing a tag
+# that starts with `v`, e.g. `v0.1.0`.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable, x86_64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            src-tauri
+
+      - name: Build TriRecover (Tauri, NSIS + MSI)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: src-tauri
+          tagName: ${{ github.ref_name }}
+          releaseName: "TriRecover ${{ github.ref_name }}"
+          releaseBody: |
+            TriRecover ${{ github.ref_name }} — read-only data recovery for Windows.
+
+            ## Downloads
+            - `TriRecover_*_x64-setup.exe` — NSIS installer (recommended)
+            - `TriRecover_*_x64_en-US.msi` — MSI installer
+
+            The source disk image is always opened read-only.
+          releaseDraft: false
+          prerelease: false
+          args: --target x86_64-pc-windows-msvc
