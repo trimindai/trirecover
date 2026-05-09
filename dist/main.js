@@ -1,252 +1,397 @@
-// TriRecover frontend (vanilla). Talks to the Rust backend through the Tauri
-// global injected by `withGlobalTauri: true` in tauri.conf.json. No bundler.
-
+// TriRecover — Recuva-style recovery wizard
 (function () {
   const { invoke } = window.__TAURI__.core;
   const { open } = window.__TAURI__.dialog;
   const { listen } = window.__TAURI__.event;
   const { open: openExternal } = window.__TAURI__.shell;
 
+  const CIRC = 2 * Math.PI * 52; // ring circumference
+
   const state = {
-    source: null,     // drive path or image file path
-    sourceType: "drive", // "drive" or "image"
+    source: null,
     destPath: null,
-    files: [],
+    files: [],       // raw from backend
+    filtered: [],    // after category/search/quality filter
     selected: new Set(),
     drives: [],
+    activeCat: "all",
+    scanType: "deep",
+    totalRecoverable: 0,
   };
 
-  // ---------- helpers ----------
-  function $(id) { return document.getElementById(id); }
+  // ---------- Helpers ----------
+  const $ = (id) => document.getElementById(id);
   function fmtBytes(n) {
-    const units = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let v = n;
-    let u = 0;
-    while (v >= 1024 && u < units.length - 1) { v /= 1024; u++; }
-    return v.toFixed(v >= 100 ? 0 : 2) + " " + units[u];
-  }
-  function fmtHex(n) {
-    return "0x" + n.toString(16).padStart(12, "0");
-  }
-  function setStatus(msg, kind = "") {
-    const el = $("scan-status");
-    el.className = "status " + kind;
-    el.textContent = msg;
-  }
-  function updateScanButton() {
-    $("start-scan").disabled = !state.source;
+    const u = ["B","KB","MB","GB","TB"];
+    let v = n, i = 0;
+    while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+    return v.toFixed(v >= 100 || i === 0 ? 0 : 1) + " " + u[i];
   }
 
-  // ---------- version ----------
-  invoke("app_version").then((v) => {
-    $("version").textContent = "v" + v;
-  }).catch(() => {});
+  function categoryOf(ext) {
+    const map = {
+      jpg:"Image",png:"Image",gif:"Image",bmp:"Image",tiff:"Image",psd:"Image",ai:"Image",
+      mp4:"Video",mov:"Video",mkv:"Video",avi:"Video",
+      pdf:"Document",
+      docx:"Office",xlsx:"Office",pptx:"Office",
+      zip:"Archive",rar:"Archive","7z":"Archive",
+      txt:"Text",csv:"Text",sql:"Text",
+    };
+    return map[ext] || "Other";
+  }
 
-  // ---------- source tabs ----------
+  function extClass(ext) {
+    const cat = categoryOf(ext);
+    if (cat === "Image") return "ext-img";
+    if (cat === "Video") return "ext-vid";
+    if (cat === "Document" || cat === "Office") return "ext-doc";
+    if (cat === "Archive") return "ext-arc";
+    return "ext-txt";
+  }
+
+  function qualityInfo(recov) {
+    if (recov >= 70) return { cls: "good", label: "Excellent" };
+    if (recov >= 40) return { cls: "fair", label: "Fair" };
+    return { cls: "poor", label: "Poor" };
+  }
+
+  function driveIcon(kind) {
+    const k = (kind || "").toLowerCase();
+    if (k.includes("usb") || k.includes("external")) return { emoji: "🔌", cls: "usb" };
+    if (k.includes("sd")) return { emoji: "💾", cls: "sd" };
+    if (k.includes("ssd") || k.includes("nvme")) return { emoji: "⚡", cls: "ssd" };
+    if (k.includes("hdd")) return { emoji: "💿", cls: "hdd" };
+    return { emoji: "💽", cls: "other" };
+  }
+
+  function driveBadge(kind) {
+    const k = (kind || "").toLowerCase();
+    if (k.includes("usb")) return { label: "USB", cls: "usb" };
+    if (k.includes("sd")) return { label: "SD", cls: "ssd" };
+    if (k.includes("ssd")) return { label: "SSD", cls: "ssd" };
+    if (k.includes("nvme")) return { label: "NVMe", cls: "ssd" };
+    if (k.includes("hdd")) return { label: "HDD", cls: "hdd" };
+    return { label: kind, cls: "hdd" };
+  }
+
+  // ---------- Navigation ----------
+  function goStep(n) {
+    [0,1,2].forEach((i) => {
+      const el = $("step-" + i);
+      el.hidden = i !== n;
+    });
+    document.querySelectorAll(".step-dot").forEach((dot) => {
+      const s = parseInt(dot.dataset.step);
+      dot.classList.toggle("active", s === n);
+      dot.classList.toggle("done", s < n);
+    });
+  }
+
+  // ---------- Version ----------
+  invoke("app_version").then((v) => $("version").textContent = "v" + v).catch(() => {});
+
+  // ---------- Source tabs ----------
   $("tab-drive").addEventListener("click", () => {
-    state.sourceType = "drive";
     $("tab-drive").classList.add("active");
     $("tab-image").classList.remove("active");
     $("panel-drive").hidden = false;
     $("panel-image").hidden = true;
-    // restore drive selection
-    const sel = $("drive-select");
-    state.source = sel.value || null;
-    updateScanButton();
   });
-
   $("tab-image").addEventListener("click", () => {
-    state.sourceType = "image";
     $("tab-image").classList.add("active");
     $("tab-drive").classList.remove("active");
     $("panel-image").hidden = false;
     $("panel-drive").hidden = true;
-    state.source = state._imagePath || null;
-    updateScanButton();
   });
 
-  // ---------- drive listing ----------
+  // ---------- Drive listing ----------
   async function loadDrives() {
-    const sel = $("drive-select");
-    sel.innerHTML = '<option value="">Scanning drives…</option>';
-    $("drive-info").textContent = "";
+    const grid = $("drives-grid");
+    grid.innerHTML = '<div class="drive-card placeholder"><div class="spinner"></div><span>Scanning for drives…</span></div>';
+    $("scan-type-section").hidden = true;
+    state.source = null;
     try {
       const drives = await invoke("list_drives");
       state.drives = drives;
-      sel.innerHTML = "";
+      grid.innerHTML = "";
       if (drives.length === 0) {
-        sel.innerHTML = '<option value="">No drives found</option>';
-        state.source = null;
-        updateScanButton();
+        grid.innerHTML = '<div class="drive-card placeholder"><span>No drives found. Try inserting a USB drive.</span></div>';
         return;
       }
-      sel.appendChild(new Option("— Select a drive —", ""));
       for (const d of drives) {
-        const label = `${d.model || d.path} — ${fmtBytes(d.size_bytes)} (${d.kind}, ${d.bus})`;
-        sel.appendChild(new Option(label, d.path));
+        const icon = driveIcon(d.kind);
+        const badge = driveBadge(d.kind);
+        const card = document.createElement("div");
+        card.className = "drive-card";
+        card.dataset.path = d.path;
+        card.innerHTML = `
+          <div class="drive-icon ${icon.cls}">${icon.emoji}</div>
+          <div class="drive-details">
+            <div class="drive-name">${d.model || d.path}</div>
+            <div class="drive-meta">${d.path}${d.serial ? " · " + d.serial : ""}</div>
+            <div class="drive-size">${fmtBytes(d.size_bytes)}</div>
+            <span class="drive-badge ${badge.cls}">${badge.label}</span>
+          </div>
+        `;
+        card.addEventListener("click", () => selectDrive(card, d));
+        grid.appendChild(card);
       }
-      state.source = null;
-      updateScanButton();
     } catch (e) {
-      sel.innerHTML = '<option value="">Error loading drives</option>';
-      $("drive-info").textContent = "Error: " + e;
+      grid.innerHTML = `<div class="drive-card placeholder"><span>Error: ${e}</span></div>`;
     }
   }
 
-  $("drive-select").addEventListener("change", (e) => {
-    const path = e.target.value;
-    state.source = path || null;
-    const d = state.drives.find((x) => x.path === path);
-    if (d) {
-      $("drive-info").textContent =
-        `${d.path} · ${d.model} · Serial: ${d.serial || "N/A"} · Sector: ${d.sector_size}B`;
-    } else {
-      $("drive-info").textContent = "";
-    }
-    updateScanButton();
-  });
+  function selectDrive(card, drive) {
+    document.querySelectorAll(".drive-card").forEach((c) => c.classList.remove("selected"));
+    card.classList.add("selected");
+    state.source = drive.path;
+    showScanSection();
+  }
 
   $("refresh-drives").addEventListener("click", loadDrives);
   loadDrives();
 
-  // ---------- file picker (image mode) ----------
-  $("pick-image").addEventListener("click", async () => {
+  // ---------- Image picker ----------
+  $("image-drop").addEventListener("click", async () => {
     const path = await open({
-      multiple: false,
-      directory: false,
+      multiple: false, directory: false,
       filters: [
-        { name: "Disk images", extensions: ["img", "dd", "bin", "iso", "raw"] },
+        { name: "Disk images", extensions: ["img","dd","bin","iso","raw"] },
         { name: "All files", extensions: ["*"] },
       ],
     });
     if (typeof path === "string") {
-      state._imagePath = path;
       state.source = path;
-      $("image-path").textContent = path;
-      $("image-path").classList.remove("muted");
-      updateScanButton();
+      const el = $("image-drop");
+      el.classList.add("has-file");
+      const pathEl = $("image-path");
+      pathEl.textContent = path;
+      pathEl.hidden = false;
+      showScanSection();
     }
   });
 
-  $("pick-dest").addEventListener("click", async () => {
-    const path = await open({ directory: true });
-    if (typeof path === "string") {
-      state.destPath = path;
-      $("dest-path").textContent = path;
-      $("dest-path").classList.remove("muted");
-      updateRecoverButton();
-    }
-  });
-
-  // ---------- scan ----------
-  let scanProgressUnlisten = null;
-  let scanDoneUnlisten = null;
-  async function setupListeners() {
-    if (scanProgressUnlisten) scanProgressUnlisten();
-    if (scanDoneUnlisten) scanDoneUnlisten();
-    scanProgressUnlisten = await listen("scan/progress", (e) => {
-      const p = e.payload;
-      const pct = p.bytes_total > 0
-        ? ((p.bytes_scanned / p.bytes_total) * 100).toFixed(1)
-        : "0";
-      setStatus(
-        `Scanning… ${p.files_found} files found · ${fmtBytes(p.bytes_scanned)} / ${fmtBytes(p.bytes_total)} (${pct}%)`
-      );
-    });
-    scanDoneUnlisten = await listen("scan/done", (e) => {
-      const d = e.payload;
-      setStatus(
-        `Done. ${d.files_found} files · ${fmtBytes(d.bytes_recoverable)} recoverable · ${(d.elapsed_ms / 1000).toFixed(1)}s`,
-        "ok"
-      );
-    });
+  function showScanSection() {
+    $("scan-type-section").hidden = false;
+    $("scan-type-section").scrollIntoView({ behavior: "smooth" });
   }
-  setupListeners();
 
-  $("start-scan").addEventListener("click", async () => {
+  // ---------- Scan type ----------
+  document.querySelectorAll(".scan-type-card").forEach((card) => {
+    card.addEventListener("click", () => {
+      document.querySelectorAll(".scan-type-card").forEach((c) => c.classList.remove("selected"));
+      card.classList.add("selected");
+      card.querySelector("input").checked = true;
+      state.scanType = card.querySelector("input").value;
+    });
+  });
+
+  // ---------- Start scan ----------
+  let progressUn = null, doneUn = null;
+
+  $("btn-start-scan").addEventListener("click", async () => {
     if (!state.source) return;
-    $("start-scan").disabled = true;
-    $("results-card").hidden = true;
+    goStep(1);
+
+    // Reset UI
+    $("ring-fg").style.strokeDashoffset = CIRC;
+    $("ring-pct").textContent = "0%";
+    $("stat-files").textContent = "0";
+    $("stat-scanned").textContent = "0 B";
+    $("stat-recoverable").textContent = "0 B";
+    $("progress-fill").style.width = "0%";
+    $("scan-live").textContent = "";
+    $("scan-title").textContent = "Scanning drive…";
+    $("scan-subtitle").textContent = "Looking for deleted files by signature";
+
     state.files = [];
     state.selected.clear();
-    setStatus("Starting scan…");
+    state.totalRecoverable = 0;
 
-    const kindsRaw = $("kinds").value.trim();
-    const kinds = kindsRaw ? kindsRaw.split(",").map((s) => s.trim()).filter(Boolean) : [];
-    const minSize = parseInt($("min-size").value || "0", 10) || 0;
+    // Listen for progress
+    if (progressUn) progressUn();
+    if (doneUn) doneUn();
 
+    let lastRecoverable = 0;
+    progressUn = await listen("scan/progress", (e) => {
+      const p = e.payload;
+      const pct = p.bytes_total > 0 ? (p.bytes_scanned / p.bytes_total) * 100 : 0;
+      $("ring-fg").style.strokeDashoffset = CIRC - (CIRC * pct / 100);
+      $("ring-pct").textContent = pct.toFixed(0) + "%";
+      $("stat-files").textContent = p.files_found.toLocaleString();
+      $("stat-scanned").textContent = fmtBytes(p.bytes_scanned);
+      $("progress-fill").style.width = pct.toFixed(1) + "%";
+    });
+
+    doneUn = await listen("scan/done", (e) => {
+      const d = e.payload;
+      state.totalRecoverable = d.bytes_recoverable;
+      $("stat-recoverable").textContent = fmtBytes(d.bytes_recoverable);
+      $("scan-title").textContent = "Scan complete!";
+      $("scan-subtitle").textContent = `Found ${d.files_found} files in ${(d.elapsed_ms/1000).toFixed(1)}s`;
+    });
+
+    const minSize = state.scanType === "quick" ? 65536 : 4096;
     try {
       const files = await invoke("scan_image", {
         imagePath: state.source,
-        kinds,
+        kinds: [],
         minSize,
       });
-      state.files = files || [];
-      renderResults();
-      $("results-card").hidden = state.files.length === 0;
-      if (state.files.length === 0) setStatus("No files found.", "warn");
+      state.files = (files || []).map((f) => ({
+        ...f,
+        category: categoryOf(f.extension),
+        quality: qualityInfo(f.recoverability),
+        fileName: `recovered_${String(f.id).padStart(4,"0")}.${f.extension}`,
+      }));
+
+      if (state.files.length === 0) {
+        $("scan-title").textContent = "No deleted files found";
+        $("scan-subtitle").textContent = "Try a different drive or scan type";
+        setTimeout(() => goStep(0), 3000);
+        return;
+      }
+
+      // Auto-advance to results
+      setTimeout(() => {
+        goStep(2);
+        buildResults();
+      }, 800);
     } catch (e) {
-      setStatus("Error: " + e, "err");
-    } finally {
-      $("start-scan").disabled = false;
+      $("scan-title").textContent = "Scan failed";
+      $("scan-subtitle").textContent = String(e);
+      $("ring-fg").style.stroke = "var(--danger)";
     }
   });
 
-  // ---------- results table ----------
-  function renderResults() {
-    const tbody = $("results-body");
-    tbody.innerHTML = "";
+  // ---------- Results ----------
+  function buildResults() {
+    // Counts
+    const counts = { all: state.files.length };
     for (const f of state.files) {
+      counts[f.category] = (counts[f.category] || 0) + 1;
+    }
+    $("count-all").textContent = counts.all;
+    for (const cat of ["Image","Video","Document","Office","Archive","Text"]) {
+      const el = $("count-" + cat);
+      if (el) el.textContent = counts[cat] || 0;
+    }
+    $("summary-total").textContent = state.files.length.toLocaleString();
+    $("summary-size").textContent = fmtBytes(state.totalRecoverable);
+
+    applyFilters();
+  }
+
+  function applyFilters() {
+    const cat = state.activeCat;
+    const search = $("search-box").value.toLowerCase();
+    const quality = $("recov-filter").value;
+
+    state.filtered = state.files.filter((f) => {
+      if (cat !== "all" && f.category !== cat) return false;
+      if (search && !f.fileName.toLowerCase().includes(search) && !f.extension.toLowerCase().includes(search)) return false;
+      if (quality === "good" && f.recoverability < 70) return false;
+      if (quality === "fair" && f.recoverability < 40) return false;
+      if (quality === "poor" && f.recoverability >= 40) return false;
+      return true;
+    });
+
+    renderFileTable();
+  }
+
+  function renderFileTable() {
+    const tbody = $("file-tbody");
+    tbody.innerHTML = "";
+    $("no-results").hidden = state.filtered.length > 0;
+
+    for (const f of state.filtered) {
       const tr = document.createElement("tr");
+      const checked = state.selected.has(f.id);
+      if (checked) tr.classList.add("checked");
       tr.innerHTML = `
-        <td><input type="checkbox" data-id="${f.id}" /></td>
-        <td>${f.extension.toUpperCase()}</td>
-        <td class="offset">${fmtHex(f.offset_bytes)}</td>
-        <td class="size">${fmtBytes(f.length_bytes)}</td>
-        <td class="recov">${f.recoverability}%</td>
-        <td>${f.signature}</td>
+        <td><input type="checkbox" data-id="${f.id}" ${checked ? "checked" : ""} /></td>
+        <td><span class="file-ext ${extClass(f.extension)}">${f.extension}</span></td>
+        <td>
+          <div class="file-name">${f.fileName}</div>
+          <div class="file-offset">Offset 0x${f.offset_bytes.toString(16).toUpperCase()} · ${f.signature}</div>
+        </td>
+        <td>${fmtBytes(f.length_bytes)}</td>
+        <td>
+          <span class="quality-dot ${f.quality.cls}"></span>
+          <span class="quality-text ${f.quality.cls}">${f.quality.label}</span>
+        </td>
       `;
+      const cb = tr.querySelector("input");
+      cb.addEventListener("change", () => {
+        if (cb.checked) state.selected.add(f.id);
+        else state.selected.delete(f.id);
+        tr.classList.toggle("checked", cb.checked);
+        updateRecoverBar();
+      });
       tbody.appendChild(tr);
     }
-    tbody.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
-      cb.addEventListener("change", (e) => {
-        const id = parseInt(e.target.getAttribute("data-id"), 10);
-        if (e.target.checked) state.selected.add(id);
-        else state.selected.delete(id);
-        updateRecoverButton();
-      });
-    });
-    updateRecoverButton();
+    updateRecoverBar();
   }
 
-  $("select-all").addEventListener("click", () => {
-    state.selected = new Set(state.files.map((f) => f.id));
-    document.querySelectorAll('#results-body input[type="checkbox"]').forEach((cb) => {
-      cb.checked = true;
-    });
-    updateRecoverButton();
-  });
-  $("select-none").addEventListener("click", () => {
-    state.selected.clear();
-    document.querySelectorAll('#results-body input[type="checkbox"]').forEach((cb) => {
-      cb.checked = false;
-    });
-    updateRecoverButton();
-  });
-  $("head-check").addEventListener("change", (e) => {
-    if (e.target.checked) $("select-all").click();
-    else $("select-none").click();
+  // Category clicks
+  $("cat-list").addEventListener("click", (e) => {
+    const item = e.target.closest(".cat-item");
+    if (!item) return;
+    document.querySelectorAll(".cat-item").forEach((c) => c.classList.remove("active"));
+    item.classList.add("active");
+    state.activeCat = item.dataset.cat;
+    applyFilters();
   });
 
-  function updateRecoverButton() {
-    $("recover").disabled = state.selected.size === 0 || !state.destPath;
+  // Search + filter
+  $("search-box").addEventListener("input", applyFilters);
+  $("recov-filter").addEventListener("change", applyFilters);
+
+  // Select all
+  function syncSelectAll(checked) {
+    if (checked) {
+      state.filtered.forEach((f) => state.selected.add(f.id));
+    } else {
+      state.filtered.forEach((f) => state.selected.delete(f.id));
+    }
+    renderFileTable();
+  }
+  $("select-all-cb").addEventListener("change", (e) => syncSelectAll(e.target.checked));
+  $("th-check-cb").addEventListener("change", (e) => {
+    $("select-all-cb").checked = e.target.checked;
+    syncSelectAll(e.target.checked);
+  });
+
+  function updateRecoverBar() {
+    const n = state.selected.size;
+    $("selected-count").textContent = n + " selected";
+    $("recover-summary").textContent = n === 0
+      ? "Select files to recover"
+      : `${n} file${n > 1 ? "s" : ""} selected`;
+    $("btn-recover").disabled = n === 0 || !state.destPath;
   }
 
-  // ---------- recover ----------
-  $("recover").addEventListener("click", async () => {
+  // ---------- Destination ----------
+  $("btn-pick-dest").addEventListener("click", async () => {
+    const path = await open({ directory: true });
+    if (typeof path === "string") {
+      state.destPath = path;
+      $("dest-label").textContent = path.length > 35
+        ? "…" + path.slice(-32)
+        : path;
+      updateRecoverBar();
+    }
+  });
+
+  // ---------- Recover ----------
+  $("btn-recover").addEventListener("click", async () => {
     if (!state.destPath || state.selected.size === 0) return;
-    $("recover").disabled = true;
-    setStatus(`Recovering ${state.selected.size} files…`);
+    const overlay = $("recover-overlay");
+    overlay.hidden = false;
+    $("recover-progress-section").hidden = false;
+    $("recover-done-section").hidden = true;
+    $("recover-progress-text").textContent = `Recovering ${state.selected.size} files…`;
+
     const items = state.files
       .filter((f) => state.selected.has(f.id))
       .map((f) => ({
@@ -255,27 +400,37 @@
         length_bytes: f.length_bytes,
         extension: f.extension,
       }));
+
     try {
       const r = await invoke("recover_files", {
         imagePath: state.source,
         items,
         destination: state.destPath,
       });
-      setStatus(
-        `Recovered ${r.written} files · ${fmtBytes(r.bytes_written)} written to ${r.destination}` +
-          (r.failed > 0 ? ` · ${r.failed} failed` : ""),
-        r.failed > 0 ? "warn" : "ok"
-      );
+      $("recover-progress-section").hidden = true;
+      $("recover-done-section").hidden = false;
+      $("recover-done-title").textContent = r.failed > 0
+        ? "Recovery completed with errors"
+        : "Recovery complete!";
+      $("recover-done-text").textContent =
+        `${r.written} files recovered · ${fmtBytes(r.bytes_written)} written` +
+        (r.failed > 0 ? ` · ${r.failed} failed` : "");
+      state._recoverDest = r.destination;
     } catch (e) {
-      setStatus("Recovery error: " + e, "err");
-    } finally {
-      $("recover").disabled = false;
+      $("recover-progress-section").hidden = true;
+      $("recover-done-section").hidden = false;
+      $("recover-done-title").textContent = "Recovery failed";
+      $("recover-done-text").textContent = String(e);
     }
   });
 
-  // ---------- footer link ----------
-  document.getElementById("homepage-link").addEventListener("click", (e) => {
-    e.preventDefault();
-    openExternal(e.currentTarget.href).catch(() => {});
+  $("btn-open-dest").addEventListener("click", () => {
+    if (state._recoverDest) {
+      openExternal(state._recoverDest).catch(() => {});
+    }
+  });
+
+  $("btn-close-overlay").addEventListener("click", () => {
+    $("recover-overlay").hidden = true;
   });
 })();
