@@ -1,4 +1,5 @@
 const RELEASES_URL = "https://github.com/trimindai/trirecover/releases/latest";
+const DIRECT_DOWNLOAD = "https://github.com/trimindai/trirecover/releases/latest/download/TriRecover_0.1.0_x64-setup.exe";
 const REPO_URL = "https://github.com/trimindai/trirecover";
 
 export default function Page() {
@@ -54,9 +55,7 @@ export default function Page() {
             </p>
             <div className="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row">
               <a
-                href={RELEASES_URL}
-                target="_blank"
-                rel="noreferrer"
+                href={DIRECT_DOWNLOAD}
                 className="group inline-flex items-center gap-3 rounded-xl bg-primary px-7 py-4 text-base font-semibold text-white shadow-lg shadow-primary/20 transition hover:bg-primaryHover"
               >
                 <DownloadIcon />
@@ -210,9 +209,7 @@ export default function Page() {
           </p>
           <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
             <a
-              href={RELEASES_URL}
-              target="_blank"
-              rel="noreferrer"
+              href={DIRECT_DOWNLOAD}
               className="inline-flex items-center gap-3 rounded-xl bg-primary px-7 py-4 text-base font-semibold text-white shadow-lg shadow-primary/20 transition hover:bg-primaryHover"
             >
               <DownloadIcon />
