@@ -142,7 +142,30 @@ async fn aligned_read(
 
 #[tauri::command]
 async fn list_drives() -> Result<Vec<DriveEntry>, String> {
-    let drives = enumerate_drives().map_err(|e| format!("enumerating drives: {e}"))?;
+    // enumerate_drives() does blocking I/O (CreateFileW on \\.\PhysicalDriveN).
+    // Run on the blocking thread pool with a timeout so the UI never hangs.
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        tokio::task::spawn_blocking(|| enumerate_drives()),
+    )
+    .await;
+
+    let drives = match result {
+        Ok(Ok(Ok(d))) => d,
+        Ok(Ok(Err(e))) => {
+            tracing::warn!("enumerate_drives failed: {e}");
+            vec![]
+        }
+        Ok(Err(e)) => {
+            tracing::warn!("enumerate task panicked: {e}");
+            vec![]
+        }
+        Err(_) => {
+            tracing::warn!("enumerate_drives timed out after 10s");
+            vec![]
+        }
+    };
+
     Ok(drives
         .into_iter()
         .map(|d| DriveEntry {

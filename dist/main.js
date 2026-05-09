@@ -115,7 +115,7 @@
       state.drives = drives;
       grid.innerHTML = "";
       if (drives.length === 0) {
-        grid.innerHTML = '<div class="drive-card placeholder"><span>No drives found. Try inserting a USB drive.</span></div>';
+        grid.innerHTML = '<div class="drive-card placeholder"><span>No drives found. Run as Administrator to scan drives, or switch to the <strong>Disk Image</strong> tab.</span></div>';
         return;
       }
       for (const d of drives) {
