@@ -291,53 +291,54 @@ impl WindowsRawReader {
             size_bytes,
         }
     }
+
+    /// Low-level sector-aligned read. Caller MUST ensure offset and buf.len()
+    /// are multiples of sector_size.
+    fn raw_read(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
+        let h = self.handle.lock();
+        let mut new_pos: i64 = 0;
+        // SAFETY: handle owned for the duration of this call; offset is i64-safe.
+        unsafe {
+            SetFilePointerEx(h.0, offset as i64, Some(&mut new_pos), FILE_BEGIN)
+                .map_err(|e| Error::os(e.code().0 as i32, format!("SetFilePointerEx: {e}")))?;
+        }
+        let mut read: u32 = 0;
+        // SAFETY: buf is a mutable slice with valid length; handle is open.
+        let r = unsafe { ReadFile(h.0, Some(buf), Some(&mut read), None) };
+        if r.is_err() {
+            let code = ::windows::core::Error::from_win32().code().0 as i32;
+            if code == 38 {
+                return Ok(0); // EOF
+            }
+            return Err(Error::os(code, "ReadFile failed"));
+        }
+        Ok(read as usize)
+    }
 }
 
 #[async_trait]
 impl SectorReader for WindowsRawReader {
     async fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
-        // FILE_FLAG_NO_BUFFERING demands sector-aligned offset, length and pointer.
-        // We fulfil this by forcing all reads through this aligned path.
+        // FILE_FLAG_NO_BUFFERING demands sector-aligned offset AND length.
+        // Handle alignment transparently so callers don't need to care.
         let ssz = u64::from(self.sector_size);
-        if offset % ssz != 0 {
-            return Err(Error::internal("read_at: unaligned offset (not a sector)"));
+        let aligned_offset = offset / ssz * ssz;
+        let aligned_end = ((offset + buf.len() as u64) + ssz - 1) / ssz * ssz;
+        let aligned_len = (aligned_end - aligned_offset) as usize;
+
+        // If already aligned, read directly into buf.
+        let skip = (offset - aligned_offset) as usize;
+        if skip == 0 && buf.len() == aligned_len {
+            return self.raw_read(offset, buf);
         }
-        if (buf.len() as u64) % ssz != 0 {
-            return Err(Error::internal("read_at: unaligned length (not a sector)"));
-        }
-        let h = self.handle.lock();
-        // Position
-        // SAFETY: handle owned for the duration of this call; offset is i64-safe.
-        let mut new_pos: i64 = 0;
-        unsafe {
-            SetFilePointerEx(
-                h.0,
-                offset as i64,
-                Some(&mut new_pos),
-                FILE_BEGIN,
-            )
-            .map_err(|e| Error::os(e.code().0 as i32, format!("SetFilePointerEx: {e}")))?;
-        }
-        // Read
-        let mut read: u32 = 0;
-        // SAFETY: buf is a mutable slice with valid length; handle is open.
-        let r = unsafe {
-            ReadFile(
-                h.0,
-                Some(buf),
-                Some(&mut read),
-                None,
-            )
-        };
-        if r.is_err() {
-            // ERROR_HANDLE_EOF = 38, ERROR_CRC = 23, ERROR_SECTOR_NOT_FOUND = 27
-            let code = ::windows::core::Error::from_win32().code().0 as i32;
-            if code == 38 {
-                return Ok(0);
-            }
-            return Err(Error::os(code, "ReadFile failed"));
-        }
-        Ok(read as usize)
+
+        // Otherwise read into a temporary aligned buffer, then copy out.
+        let mut tmp = vec![0u8; aligned_len];
+        let n = self.raw_read(aligned_offset, &mut tmp)?;
+        let usable = n.saturating_sub(skip);
+        let copy = usable.min(buf.len());
+        buf[..copy].copy_from_slice(&tmp[skip..skip + copy]);
+        Ok(copy)
     }
 
     fn size_bytes(&self) -> u64 {

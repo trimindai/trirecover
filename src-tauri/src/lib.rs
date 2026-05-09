@@ -111,33 +111,6 @@ fn open_source(path: &str) -> Result<Arc<dyn SectorReader>, String> {
     }
 }
 
-/// Read bytes from a reader, handling sector-alignment for physical drives.
-async fn aligned_read(
-    reader: &Arc<dyn SectorReader>,
-    offset: u64,
-    len: u64,
-) -> Result<Vec<u8>, String> {
-    let ss = reader.sector_size() as u64;
-    if ss <= 1 {
-        // No alignment needed (image file)
-        return reader
-            .read_vec(offset, len as usize)
-            .await
-            .map_err(|e| format!("read: {e}"));
-    }
-    let aligned_start = offset / ss * ss;
-    let aligned_end = (offset + len + ss - 1) / ss * ss;
-    let aligned_len = (aligned_end - aligned_start) as usize;
-    let mut buf = vec![0u8; aligned_len];
-    let n = reader
-        .read_at(aligned_start, &mut buf)
-        .await
-        .map_err(|e| format!("read: {e}"))?;
-    let skip = (offset - aligned_start) as usize;
-    let take = (len as usize).min(n.saturating_sub(skip));
-    Ok(buf[skip..skip + take].to_vec())
-}
-
 // ---------- Tauri commands ----------
 
 #[tauri::command]
@@ -276,7 +249,7 @@ async fn recover_files(
             item.id, item.offset_bytes, item.extension
         );
         let out_path = dest.join(&name);
-        let bytes = match aligned_read(&reader, item.offset_bytes, item.length_bytes).await {
+        let bytes = match reader.read_vec(item.offset_bytes, item.length_bytes as usize).await {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!(target: "trirecover", "read failed for {name}: {e}");
