@@ -1,0 +1,24 @@
+[package]
+name = "tr-filesystem"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "TriRecover NTFS, FAT32 and exFAT parsers."
+
+[lib]
+name = "tr_filesystem"
+path = "src/lib.rs"
+
+[dependencies]
+tr-core.workspace = true
+tr-storage.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+byteorder.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

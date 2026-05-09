@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TriRecover</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">TR</div>
+        <div>
+          <div class="brand-title">TriRecover</div>
+          <div class="brand-sub" id="version">v0.1.0</div>
+        </div>
+      </div>
+      <div class="readonly-badge" title="The source image is opened read-only.">
+        READ-ONLY
+      </div>
+    </header>
+
+    <main class="page">
+      <section class="card">
+        <h2>1. Pick a disk image</h2>
+        <p class="muted">
+          Choose a raw disk image (.img, .dd, .bin). Raw block devices are not
+          supported in this version — image the drive first.
+        </p>
+        <div class="row">
+          <button id="pick-image" class="primary">Choose image…</button>
+          <span id="image-path" class="path muted">no file selected</span>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>2. Scan options</h2>
+        <div class="row">
+          <label>
+            File kinds
+            <input
+              id="kinds"
+              type="text"
+              placeholder="all"
+              value=""
+              title="Comma-separated. Leave empty to scan all."
+            />
+          </label>
+          <label>
+            Min size (bytes)
+            <input id="min-size" type="number" value="4096" min="0" />
+          </label>
+          <button id="start-scan" class="primary" disabled>Start scan</button>
+        </div>
+        <div id="scan-status" class="status"></div>
+      </section>
+
+      <section class="card" id="results-card" hidden>
+        <h2>3. Recover</h2>
+        <div class="row">
+          <button id="select-all">Select all</button>
+          <button id="select-none">Select none</button>
+          <span class="grow"></span>
+          <button id="pick-dest">Output folder…</button>
+          <span id="dest-path" class="path muted">no folder chosen</span>
+          <button id="recover" class="primary" disabled>Recover selected</button>
+        </div>
+        <div class="table-wrap">
+          <table id="results">
+            <thead>
+              <tr>
+                <th><input type="checkbox" id="head-check" /></th>
+                <th>Kind</th>
+                <th>Offset</th>
+                <th>Size</th>
+                <th>Recoverability</th>
+                <th>Signature</th>
+              </tr>
+            </thead>
+            <tbody id="results-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer muted">
+      Read-only forensics — TriMind AI ·
+      <a href="https://trirecover.trimind.tech" id="homepage-link">trirecover.trimind.tech</a>
+    </footer>
+
+    <script src="main.js"></script>
+  </body>
+</html>

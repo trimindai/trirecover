@@ -1,0 +1,249 @@
+//! TriRecover desktop shell. Wires the carver to the frontend via Tauri
+//! invoke handlers. The source drive (a disk image file in this v0) is never
+//! written to.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
+use tauri::{Emitter, Manager};
+use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc;
+use tr_carver::scanner::CancelToken;
+use tr_carver::{Carver, ScanConfig};
+use tr_core::FileKind;
+use tr_storage::{FixtureReader, SectorReader, SectorReaderExt};
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct CarvedSummary {
+    id: u64,
+    kind: String,
+    extension: String,
+    offset_bytes: u64,
+    length_bytes: u64,
+    recoverability: u8,
+    signature: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct ScanProgressEvent {
+    bytes_scanned: u64,
+    bytes_total: u64,
+    files_found: u64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct ScanDoneEvent {
+    files_found: u64,
+    bytes_recoverable: u64,
+    elapsed_ms: u64,
+}
+
+fn parse_kinds(kinds: &[String]) -> Option<Vec<FileKind>> {
+    if kinds.is_empty() {
+        return None;
+    }
+    let parsed: Vec<FileKind> = kinds
+        .iter()
+        .filter_map(|s| match s.to_ascii_lowercase().as_str() {
+            "jpg" | "jpeg" => Some(FileKind::Jpg),
+            "png" => Some(FileKind::Png),
+            "gif" => Some(FileKind::Gif),
+            "bmp" => Some(FileKind::Bmp),
+            "tiff" | "tif" => Some(FileKind::Tiff),
+            "mp4" => Some(FileKind::Mp4),
+            "mov" => Some(FileKind::Mov),
+            "mkv" => Some(FileKind::Mkv),
+            "avi" => Some(FileKind::Avi),
+            "pdf" => Some(FileKind::Pdf),
+            "docx" => Some(FileKind::Docx),
+            "xlsx" => Some(FileKind::Xlsx),
+            "pptx" => Some(FileKind::Pptx),
+            "zip" => Some(FileKind::Zip),
+            "rar" => Some(FileKind::Rar),
+            "7z" | "sevenz" => Some(FileKind::SevenZ),
+            "psd" => Some(FileKind::Psd),
+            "ai" => Some(FileKind::Ai),
+            "txt" => Some(FileKind::Txt),
+            "csv" => Some(FileKind::Csv),
+            "sql" => Some(FileKind::Sql),
+            _ => None,
+        })
+        .collect();
+    if parsed.is_empty() {
+        None
+    } else {
+        Some(parsed)
+    }
+}
+
+#[tauri::command]
+async fn scan_image(
+    app: tauri::AppHandle,
+    image_path: String,
+    kinds: Vec<String>,
+    min_size: u64,
+) -> Result<Vec<CarvedSummary>, String> {
+    let path = PathBuf::from(&image_path);
+    let reader: Arc<dyn SectorReader> = Arc::new(
+        FixtureReader::from_file(&path).map_err(|e| format!("opening image: {e}"))?,
+    );
+    let total = reader.size_bytes();
+    let cfg = ScanConfig {
+        min_carve_bytes: min_size,
+        kinds: parse_kinds(&kinds),
+        ..Default::default()
+    };
+    let carver = Carver::new(reader.clone(), cfg);
+    let (tx, mut rx) = mpsc::channel(256);
+    let cancel = CancelToken::new();
+    let scan = tokio::spawn(async move {
+        carver.scan_range(0, total, tx, cancel).await
+    });
+
+    let started = std::time::Instant::now();
+    let mut summaries: Vec<CarvedSummary> = Vec::new();
+    let mut id_seq: u64 = 0;
+    let mut bytes_recoverable: u64 = 0;
+    while let Some(c) = rx.recv().await {
+        id_seq += 1;
+        bytes_recoverable += c.length_bytes;
+        let _ = app.emit(
+            "scan/progress",
+            ScanProgressEvent {
+                bytes_scanned: c.offset_bytes + c.length_bytes,
+                bytes_total: total,
+                files_found: id_seq,
+            },
+        );
+        summaries.push(CarvedSummary {
+            id: id_seq,
+            kind: format!("{:?}", c.kind),
+            extension: c.kind.extension().to_string(),
+            offset_bytes: c.offset_bytes,
+            length_bytes: c.length_bytes,
+            recoverability: c.recoverability,
+            signature: c.signature,
+        });
+    }
+    let _ = scan
+        .await
+        .map_err(|e| format!("scan task panicked: {e}"))?
+        .map_err(|e| format!("scan failed: {e}"))?;
+    let _ = app.emit(
+        "scan/done",
+        ScanDoneEvent {
+            files_found: summaries.len() as u64,
+            bytes_recoverable,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+        },
+    );
+    Ok(summaries)
+}
+
+#[derive(Debug, Deserialize)]
+struct RecoverItem {
+    offset_bytes: u64,
+    length_bytes: u64,
+    extension: String,
+    id: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct RecoverResult {
+    written: u64,
+    failed: u64,
+    bytes_written: u64,
+    destination: String,
+}
+
+#[tauri::command]
+async fn recover_files(
+    image_path: String,
+    items: Vec<RecoverItem>,
+    destination: String,
+) -> Result<RecoverResult, String> {
+    let dest = PathBuf::from(&destination);
+    std::fs::create_dir_all(&dest).map_err(|e| format!("create dest dir: {e}"))?;
+    let reader: Arc<dyn SectorReader> = Arc::new(
+        FixtureReader::from_file(&image_path).map_err(|e| format!("re-opening image: {e}"))?,
+    );
+
+    let mut written = 0u64;
+    let mut failed = 0u64;
+    let mut bytes_written = 0u64;
+    for item in items {
+        let name = format!(
+            "{:08}_{:016x}.{}",
+            item.id, item.offset_bytes, item.extension
+        );
+        let out_path = dest.join(&name);
+        let bytes = match reader
+            .read_vec(item.offset_bytes, item.length_bytes as usize)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(target: "trirecover", "read failed for {name}: {e}");
+                failed += 1;
+                continue;
+            }
+        };
+        match tokio::fs::File::create(&out_path).await {
+            Ok(mut f) => {
+                if let Err(e) = f.write_all(&bytes).await {
+                    tracing::warn!(target: "trirecover", "write failed for {name}: {e}");
+                    failed += 1;
+                    continue;
+                }
+                let _ = f.flush().await;
+                bytes_written += bytes.len() as u64;
+                written += 1;
+            }
+            Err(e) => {
+                tracing::warn!(target: "trirecover", "create failed for {name}: {e}");
+                failed += 1;
+            }
+        }
+    }
+
+    Ok(RecoverResult {
+        written,
+        failed,
+        bytes_written,
+        destination: dest.to_string_lossy().to_string(),
+    })
+}
+
+#[tauri::command]
+fn app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("info,tr_carver=info,trirecover_app_lib=info")
+        .with_target(false)
+        .try_init();
+
+    tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_shell::init())
+        .invoke_handler(tauri::generate_handler![
+            scan_image,
+            recover_files,
+            app_version
+        ])
+        .setup(|app| {
+            // Bring the main window to front on launch.
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.show();
+                let _ = win.set_focus();
+            }
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+        .expect("error while running TriRecover");
+}

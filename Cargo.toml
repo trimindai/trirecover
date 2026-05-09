@@ -1,0 +1,93 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/storage",
+    "crates/partition",
+    "crates/filesystem",
+    "crates/carver",
+    "crates/recovery-engine",
+    "crates/cli",
+    "src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.78"
+authors = ["TriMind AI <hello@trimind.tech>"]
+license = "GPL-3.0-or-later OR LicenseRef-TriRecover-Commercial"
+repository = "https://github.com/trimindai/trirecover"
+homepage = "https://trirecover.trimind.tech"
+description = "Professional read-only data recovery for Windows."
+
+[workspace.dependencies]
+# async + concurrency
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util"] }
+futures = "0.3"
+async-trait = "0.1"
+parking_lot = "0.12"
+crossbeam-channel = "0.5"
+rayon = "1.10"
+
+# logging + errors
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
+thiserror = "1"
+anyhow = "1"
+
+# serde + data
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = "1.3"
+uuid = { version = "1.10", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# binary parsing
+byteorder = "1.5"
+zerocopy = { version = "0.7", features = ["derive"] }
+crc = "3"
+
+# storage / db
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono", "uuid", "macros", "migrate"] }
+
+# windows ffi (gated by cfg(windows))
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_Storage_IscsiDisc",
+    "Win32_System_Ioctl",
+    "Win32_System_IO",
+    "Win32_System_SystemServices",
+    "Win32_Security",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_Debug",
+] }
+
+# tauri
+tauri = { version = "2", features = [] }
+tauri-build = { version = "2", features = [] }
+
+# internal
+tr-core = { path = "crates/core" }
+tr-storage = { path = "crates/storage" }
+tr-partition = { path = "crates/partition" }
+tr-filesystem = { path = "crates/filesystem" }
+tr-carver = { path = "crates/carver" }
+tr-recovery-engine = { path = "crates/recovery-engine" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
+[profile.release-debug]
+inherits = "release"
+debug = true
+strip = "none"
+
+[profile.dev]
+opt-level = 1

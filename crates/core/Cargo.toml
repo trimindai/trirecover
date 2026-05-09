@@ -1,0 +1,28 @@
+[package]
+name = "tr-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "TriRecover core: errors, config, session DB, shared types."
+
+[lib]
+name = "tr_core"
+path = "src/lib.rs"
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

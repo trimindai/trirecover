@@ -1,0 +1,46 @@
+/target
+**/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# tauri / vite
+src-tauri/target
+src-tauri/gen
+frontend/dist
+frontend/node_modules
+frontend/.vite
+node_modules
+
+# web (vercel landing page)
+web/node_modules
+web/.next
+web/.vercel
+web/next-env.d.ts
+
+# IDE
+.vscode/*
+!.vscode/extensions.json
+.idea
+*.swp
+.DS_Store
+
+# build artifacts
+*.msi
+*.exe
+*.app
+*.dmg
+*.deb
+*.rpm
+
+# secrets
+.env
+.env.*
+!.env.example
+*.pfx
+*.cer
+
+# scan sessions / dumps
+sessions/*.db
+sessions/*.db-wal
+sessions/*.db-shm
+dumps/

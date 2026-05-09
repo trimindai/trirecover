@@ -1,0 +1,25 @@
+[package]
+name = "tr-partition"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "TriRecover MBR and GPT partition table parsers."
+
+[lib]
+name = "tr_partition"
+path = "src/lib.rs"
+
+[dependencies]
+tr-core.workspace = true
+tr-storage.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+crc.workspace = true
+byteorder.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

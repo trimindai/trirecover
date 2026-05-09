@@ -1,0 +1,27 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html, body {
+  background: #0f1115;
+  color: #e6e9ef;
+}
+
+/* Subtle radial glow behind the hero */
+.hero-glow {
+  background:
+    radial-gradient(60% 60% at 50% 0%, rgba(79, 140, 255, 0.18) 0%, rgba(79, 140, 255, 0) 60%),
+    radial-gradient(40% 40% at 80% 30%, rgba(70, 196, 111, 0.10) 0%, rgba(70, 196, 111, 0) 60%);
+}
+
+.grid-bg {
+  background-image:
+    linear-gradient(to right, rgba(255,255,255,0.04) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255,255,255,0.04) 1px, transparent 1px);
+  background-size: 32px 32px;
+  mask-image: radial-gradient(ellipse at center, black 30%, transparent 75%);
+}

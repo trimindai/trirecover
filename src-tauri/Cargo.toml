@@ -1,0 +1,40 @@
+[package]
+name = "trirecover-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "TriRecover desktop application (Tauri shell)."
+
+[lib]
+name = "trirecover_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "trirecover-app"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-shell = "2"
+
+tr-core.workspace = true
+tr-carver.workspace = true
+tr-storage.workspace = true
+
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "fs", "io-util", "sync"] }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[features]
+# Tauri 2 needs a `custom-protocol` feature enabled when bundling release builds.
+custom-protocol = ["tauri/custom-protocol"]

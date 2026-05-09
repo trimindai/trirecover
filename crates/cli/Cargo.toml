@@ -1,0 +1,21 @@
+[package]
+name = "trirecover-carve"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "TriRecover CLI carver — recovers files from disk images by signature."
+
+[[bin]]
+name = "trirecover-carve"
+path = "src/main.rs"
+
+[dependencies]
+tr-core.workspace = true
+tr-carver.workspace = true
+tr-storage.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "fs", "io-util", "signal", "sync"] }
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

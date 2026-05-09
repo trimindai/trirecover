@@ -1,0 +1,18 @@
+[package]
+name = "tr-recovery-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "TriRecover scan strategies, async job manager, sessions. Stub — implementation pending."
+
+[lib]
+name = "tr_recovery_engine"
+path = "src/lib.rs"
+
+[dependencies]
+tr-core.workspace = true
+tr-storage.workspace = true
+tr-partition.workspace = true
+tr-filesystem.workspace = true

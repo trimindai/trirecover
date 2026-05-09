@@ -1,0 +1,25 @@
+[package]
+name = "tr-carver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "TriRecover signature-based file carver."
+
+[lib]
+name = "tr_carver"
+path = "src/lib.rs"
+
+[dependencies]
+tr-core.workspace = true
+tr-storage.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+byteorder.workspace = true
+crc.workspace = true
+rayon.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }
