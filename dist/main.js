@@ -8,10 +8,12 @@
   const { open: openExternal } = window.__TAURI__.shell;
 
   const state = {
-    imagePath: null,
+    source: null,     // drive path or image file path
+    sourceType: "drive", // "drive" or "image"
     destPath: null,
     files: [],
     selected: new Set(),
+    drives: [],
   };
 
   // ---------- helpers ----------
@@ -31,13 +33,83 @@
     el.className = "status " + kind;
     el.textContent = msg;
   }
+  function updateScanButton() {
+    $("start-scan").disabled = !state.source;
+  }
 
   // ---------- version ----------
   invoke("app_version").then((v) => {
     $("version").textContent = "v" + v;
   }).catch(() => {});
 
-  // ---------- file pickers ----------
+  // ---------- source tabs ----------
+  $("tab-drive").addEventListener("click", () => {
+    state.sourceType = "drive";
+    $("tab-drive").classList.add("active");
+    $("tab-image").classList.remove("active");
+    $("panel-drive").hidden = false;
+    $("panel-image").hidden = true;
+    // restore drive selection
+    const sel = $("drive-select");
+    state.source = sel.value || null;
+    updateScanButton();
+  });
+
+  $("tab-image").addEventListener("click", () => {
+    state.sourceType = "image";
+    $("tab-image").classList.add("active");
+    $("tab-drive").classList.remove("active");
+    $("panel-image").hidden = false;
+    $("panel-drive").hidden = true;
+    state.source = state._imagePath || null;
+    updateScanButton();
+  });
+
+  // ---------- drive listing ----------
+  async function loadDrives() {
+    const sel = $("drive-select");
+    sel.innerHTML = '<option value="">Scanning drives…</option>';
+    $("drive-info").textContent = "";
+    try {
+      const drives = await invoke("list_drives");
+      state.drives = drives;
+      sel.innerHTML = "";
+      if (drives.length === 0) {
+        sel.innerHTML = '<option value="">No drives found</option>';
+        state.source = null;
+        updateScanButton();
+        return;
+      }
+      sel.appendChild(new Option("— Select a drive —", ""));
+      for (const d of drives) {
+        const label = `${d.model || d.path} — ${fmtBytes(d.size_bytes)} (${d.kind}, ${d.bus})`;
+        sel.appendChild(new Option(label, d.path));
+      }
+      state.source = null;
+      updateScanButton();
+    } catch (e) {
+      sel.innerHTML = '<option value="">Error loading drives</option>';
+      $("drive-info").textContent = "Error: " + e;
+    }
+  }
+
+  $("drive-select").addEventListener("change", (e) => {
+    const path = e.target.value;
+    state.source = path || null;
+    const d = state.drives.find((x) => x.path === path);
+    if (d) {
+      $("drive-info").textContent =
+        `${d.path} · ${d.model} · Serial: ${d.serial || "N/A"} · Sector: ${d.sector_size}B`;
+    } else {
+      $("drive-info").textContent = "";
+    }
+    updateScanButton();
+  });
+
+  $("refresh-drives").addEventListener("click", loadDrives);
+  loadDrives();
+
+  // ---------- file picker (image mode) ----------
   $("pick-image").addEventListener("click", async () => {
     const path = await open({
       multiple: false,
@@ -48,10 +120,11 @@
       ],
     });
     if (typeof path === "string") {
-      state.imagePath = path;
+      state._imagePath = path;
+      state.source = path;
       $("image-path").textContent = path;
       $("image-path").classList.remove("muted");
-      $("start-scan").disabled = false;
+      updateScanButton();
     }
   });
 
@@ -91,7 +164,7 @@
   setupListeners();
 
   $("start-scan").addEventListener("click", async () => {
-    if (!state.imagePath) return;
+    if (!state.source) return;
     $("start-scan").disabled = true;
     $("results-card").hidden = true;
     state.files = [];
@@ -104,7 +177,7 @@
 
     try {
       const files = await invoke("scan_image", {
-        imagePath: state.imagePath,
+        imagePath: state.source,
         kinds,
         minSize,
       });
@@ -184,7 +257,7 @@
       }));
     try {
       const r = await invoke("recover_files", {
-        imagePath: state.imagePath,
+        imagePath: state.source,
         items,
         destination: state.destPath,
       });

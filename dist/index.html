@@ -15,21 +15,38 @@
           <div class="brand-sub" id="version">v0.1.0</div>
         </div>
       </div>
-      <div class="readonly-badge" title="The source image is opened read-only.">
+      <div class="readonly-badge" title="The source is opened read-only.">
         READ-ONLY
       </div>
     </header>
 
     <main class="page">
       <section class="card">
-        <h2>1. Pick a disk image</h2>
+        <h2>1. Select source</h2>
         <p class="muted">
-          Choose a raw disk image (.img, .dd, .bin). Raw block devices are not
-          supported in this version — image the drive first.
+          Choose a connected drive (USB, HDD, SSD, SD card) or a disk image file to recover deleted files from.
         </p>
-        <div class="row">
-          <button id="pick-image" class="primary">Choose image…</button>
-          <span id="image-path" class="path muted">no file selected</span>
+
+        <div class="source-tabs">
+          <button id="tab-drive" class="tab active">Drive</button>
+          <button id="tab-image" class="tab">Disk Image</button>
+        </div>
+
+        <div id="panel-drive" class="source-panel">
+          <div class="row">
+            <select id="drive-select">
+              <option value="">Loading drives…</option>
+            </select>
+            <button id="refresh-drives">Refresh</button>
+          </div>
+          <div id="drive-info" class="muted" style="margin-top:8px;font-size:12px;"></div>
+        </div>
+
+        <div id="panel-image" class="source-panel" hidden>
+          <div class="row">
+            <button id="pick-image" class="primary">Choose image…</button>
+            <span id="image-path" class="path muted">no file selected</span>
+          </div>
         </div>
       </section>
 
@@ -84,7 +101,7 @@
     </main>
 
     <footer class="footer muted">
-      Read-only forensics — TriMind AI ·
+      Read-only data recovery — TriMind AI ·
       <a href="https://trirecover.trimind.tech" id="homepage-link">trirecover.trimind.tech</a>
     </footer>
 

@@ -1,6 +1,5 @@
 //! TriRecover desktop shell. Wires the carver to the frontend via Tauri
-//! invoke handlers. The source drive (a disk image file in this v0) is never
-//! written to.
+//! invoke handlers. The source drive is never written to.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,7 +11,7 @@ use tokio::sync::mpsc;
 use tr_carver::scanner::CancelToken;
 use tr_carver::{Carver, ScanConfig};
 use tr_core::FileKind;
-use tr_storage::{FixtureReader, SectorReader, SectorReaderExt};
+use tr_storage::{enumerate_drives, open_drive, FixtureReader, SectorReader, SectorReaderExt};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct CarvedSummary {
@@ -37,6 +36,17 @@ struct ScanDoneEvent {
     files_found: u64,
     bytes_recoverable: u64,
     elapsed_ms: u64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct DriveEntry {
+    path: String,
+    model: String,
+    serial: String,
+    size_bytes: u64,
+    sector_size: u32,
+    kind: String,
+    bus: String,
 }
 
 fn parse_kinds(kinds: &[String]) -> Option<Vec<FileKind>> {
@@ -77,6 +87,76 @@ fn parse_kinds(kinds: &[String]) -> Option<Vec<FileKind>> {
     }
 }
 
+/// Returns true if the path looks like a physical drive path rather than a file.
+fn is_drive_path(path: &str) -> bool {
+    // Windows: \\.\PhysicalDrive0, \\.\PhysicalDrive1, etc.
+    // Linux: /dev/sda, /dev/nvme0n1, etc.
+    path.starts_with(r"\\.\PhysicalDrive")
+        || path.starts_with("/dev/sd")
+        || path.starts_with("/dev/nvme")
+        || path.starts_with("/dev/mmcblk")
+        || path.starts_with("/dev/vd")
+        || path.starts_with("/dev/hd")
+        || path.starts_with("/dev/xvd")
+}
+
+/// Open a reader for a drive path or a disk image file.
+fn open_source(path: &str) -> Result<Arc<dyn SectorReader>, String> {
+    if is_drive_path(path) {
+        let handle = open_drive(path).map_err(|e| format!("opening drive: {e}"))?;
+        Ok(handle.reader())
+    } else {
+        let reader = FixtureReader::from_file(path).map_err(|e| format!("opening image: {e}"))?;
+        Ok(Arc::new(reader))
+    }
+}
+
+/// Read bytes from a reader, handling sector-alignment for physical drives.
+async fn aligned_read(
+    reader: &Arc<dyn SectorReader>,
+    offset: u64,
+    len: u64,
+) -> Result<Vec<u8>, String> {
+    let ss = reader.sector_size() as u64;
+    if ss <= 1 {
+        // No alignment needed (image file)
+        return reader
+            .read_vec(offset, len as usize)
+            .await
+            .map_err(|e| format!("read: {e}"));
+    }
+    let aligned_start = offset / ss * ss;
+    let aligned_end = (offset + len + ss - 1) / ss * ss;
+    let aligned_len = (aligned_end - aligned_start) as usize;
+    let mut buf = vec![0u8; aligned_len];
+    let n = reader
+        .read_at(aligned_start, &mut buf)
+        .await
+        .map_err(|e| format!("read: {e}"))?;
+    let skip = (offset - aligned_start) as usize;
+    let take = (len as usize).min(n.saturating_sub(skip));
+    Ok(buf[skip..skip + take].to_vec())
+}
+
+// ---------- Tauri commands ----------
+
+#[tauri::command]
+async fn list_drives() -> Result<Vec<DriveEntry>, String> {
+    let drives = enumerate_drives().map_err(|e| format!("enumerating drives: {e}"))?;
+    Ok(drives
+        .into_iter()
+        .map(|d| DriveEntry {
+            path: d.info.path,
+            model: d.info.model,
+            serial: d.info.serial,
+            size_bytes: d.info.size_bytes,
+            sector_size: d.info.sector_size,
+            kind: format!("{:?}", d.info.kind),
+            bus: format!("{:?}", d.info.bus),
+        })
+        .collect())
+}
+
 #[tauri::command]
 async fn scan_image(
     app: tauri::AppHandle,
@@ -84,10 +164,7 @@ async fn scan_image(
     kinds: Vec<String>,
     min_size: u64,
 ) -> Result<Vec<CarvedSummary>, String> {
-    let path = PathBuf::from(&image_path);
-    let reader: Arc<dyn SectorReader> = Arc::new(
-        FixtureReader::from_file(&path).map_err(|e| format!("opening image: {e}"))?,
-    );
+    let reader = open_source(&image_path)?;
     let total = reader.size_bytes();
     let cfg = ScanConfig {
         min_carve_bytes: min_size,
@@ -165,9 +242,7 @@ async fn recover_files(
 ) -> Result<RecoverResult, String> {
     let dest = PathBuf::from(&destination);
     std::fs::create_dir_all(&dest).map_err(|e| format!("create dest dir: {e}"))?;
-    let reader: Arc<dyn SectorReader> = Arc::new(
-        FixtureReader::from_file(&image_path).map_err(|e| format!("re-opening image: {e}"))?,
-    );
+    let reader = open_source(&image_path)?;
 
     let mut written = 0u64;
     let mut failed = 0u64;
@@ -178,10 +253,7 @@ async fn recover_files(
             item.id, item.offset_bytes, item.extension
         );
         let out_path = dest.join(&name);
-        let bytes = match reader
-            .read_vec(item.offset_bytes, item.length_bytes as usize)
-            .await
-        {
+        let bytes = match aligned_read(&reader, item.offset_bytes, item.length_bytes).await {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!(target: "trirecover", "read failed for {name}: {e}");
@@ -232,6 +304,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
+            list_drives,
             scan_image,
             recover_files,
             app_version
