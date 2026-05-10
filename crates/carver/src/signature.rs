@@ -5,6 +5,7 @@
 //! that position — needed for formats like MP4 whose four-byte big-endian
 //! atom-size precedes the `ftyp` magic.
 
+use aho_corasick::AhoCorasick;
 use std::sync::OnceLock;
 
 use crate::validators::{
@@ -411,9 +412,13 @@ pub fn sql_validator() -> &'static TextValidator {
     &V_SQL
 }
 
-/// First-byte index over [`signatures`]: for each byte value, the list of
-/// signature indices whose anchor byte equals that value.
-#[derive(Debug)]
+/// Signature index with Aho-Corasick SIMD multi-pattern automaton.
+///
+/// Instead of checking every byte against a first-byte lookup table, the AC
+/// automaton scans the entire chunk buffer with SIMD instructions, jumping
+/// directly to positions where a known magic prefix matches. This turns the
+/// inner scan loop from O(n) byte-by-byte to O(n/W) where W is the SIMD
+/// register width (16–64 bytes on modern CPUs).
 pub struct SignatureIndex {
     by_anchor: [Vec<u16>; 256],
     /// Indices that participate in regular (magic-driven) scanning. Excludes
@@ -423,19 +428,33 @@ pub struct SignatureIndex {
     /// minimum number of trailing bytes a buffer must have past a candidate
     /// position before that position can be tested.
     pub max_magic_extent: usize,
+    /// Aho-Corasick automaton built from the fixed-byte prefixes of each
+    /// magic-driven signature. One pattern per signature.
+    pub ac: AhoCorasick,
+    /// Maps AC pattern index → signature catalog index.
+    pub ac_sig_ids: Vec<u16>,
+}
+
+impl std::fmt::Debug for SignatureIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SignatureIndex")
+            .field("magic_driven_count", &self.magic_driven.len())
+            .field("max_magic_extent", &self.max_magic_extent)
+            .field("ac_patterns", &self.ac_sig_ids.len())
+            .finish()
+    }
 }
 
 impl SignatureIndex {
     #[must_use]
     pub fn build() -> Self {
-        // SAFETY (no unsafe): we initialize via from_fn.
         let mut by_anchor: [Vec<u16>; 256] = std::array::from_fn(|_| Vec::new());
         let mut magic_driven = Vec::new();
         let mut max_extent = 0usize;
+        let mut ac_patterns: Vec<Vec<u8>> = Vec::new();
+        let mut ac_sig_ids: Vec<u16> = Vec::new();
+
         for (idx, sig) in signatures().iter().enumerate() {
-            // Skip heuristic-only entries (sentinel single-byte magic of 0x00
-            // at offset 0 that the docs never permit at the start of a real
-            // file is our marker).
             if matches!(sig.kind, FileKind::Txt | FileKind::Csv | FileKind::Sql) {
                 continue;
             }
@@ -446,11 +465,32 @@ impl SignatureIndex {
             if extent > max_extent {
                 max_extent = extent;
             }
+
+            // Extract the fixed-byte prefix from the anchor position for AC.
+            // Stop at the first wildcard (None) byte.
+            let anchor = sig.anchor_idx();
+            let mut pattern = Vec::new();
+            for &mb in &sig.magic[anchor..] {
+                match mb {
+                    Some(b) => pattern.push(b),
+                    None => break,
+                }
+            }
+            // AC needs at least 1 byte; all our sigs have at least one fixed byte.
+            if !pattern.is_empty() {
+                ac_patterns.push(pattern);
+                ac_sig_ids.push(id);
+            }
         }
+
+        let ac = AhoCorasick::new(&ac_patterns).expect("AC automaton build");
+
         Self {
             by_anchor,
             magic_driven,
             max_magic_extent: max_extent,
+            ac,
+            ac_sig_ids,
         }
     }
 

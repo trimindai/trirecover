@@ -21,6 +21,7 @@ byteorder.workspace = true
 crc.workspace = true
 rayon.workspace = true
 memchr = "2"
+aho-corasick = "1"
 
 [dev-dependencies]
 tokio = { workspace = true }

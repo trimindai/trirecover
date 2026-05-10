@@ -19,6 +19,7 @@ async-trait.workspace = true
 parking_lot.workspace = true
 chrono.workspace = true
 serde.workspace = true
+memmap2 = "0.9"
 
 [target.'cfg(windows)'.dependencies]
 windows.workspace = true

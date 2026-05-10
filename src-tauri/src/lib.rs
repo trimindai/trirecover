@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 use tr_carver::scanner::CancelToken;
 use tr_carver::{Carver, ScanConfig};
 use tr_core::FileKind;
-use tr_storage::{enumerate_drives, open_drive, FixtureReader, SectorReader, SectorReaderExt};
+use tr_storage::{enumerate_drives, open_drive, MmapReader, SectorReader, SectorReaderExt};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct CarvedSummary {
@@ -107,7 +107,7 @@ fn open_source(path: &str) -> Result<Arc<dyn SectorReader>, String> {
         let handle = open_drive(path).map_err(|e| format!("opening drive: {e}"))?;
         Ok(handle.reader())
     } else {
-        let reader = FixtureReader::from_file(path).map_err(|e| format!("opening image: {e}"))?;
+        let reader = MmapReader::from_file(path).map_err(|e| format!("opening image: {e}"))?;
         Ok(Arc::new(reader))
     }
 }
@@ -186,8 +186,8 @@ async fn scan_image(
     // naturally but CPU-bound validation still benefits.
     let n_workers = if total > 256 * 1024 * 1024 {
         std::thread::available_parallelism()
-            .map(|n| n.get().min(4))
-            .unwrap_or(2)
+            .map(|n| n.get().min(8))
+            .unwrap_or(4)
     } else {
         1
     };
@@ -241,7 +241,7 @@ async fn scan_image(
             offset_bytes: c.offset_bytes,
             length_bytes: c.length_bytes,
             recoverability: c.recoverability,
-            signature: c.signature,
+            signature: c.signature.to_string(),
         });
     }
 

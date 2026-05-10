@@ -80,12 +80,12 @@ impl CancelToken {
     }
 
     pub fn cancel(&self) {
-        self.flag.store(true, Ordering::SeqCst);
+        self.flag.store(true, Ordering::Release);
     }
 
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
-        self.flag.load(Ordering::SeqCst)
+        self.flag.load(Ordering::Acquire)
     }
 }
 
@@ -161,91 +161,70 @@ impl Carver {
                 scan_end = buf_len - overlap;
             }
 
-            // Walk the buffer.
-            let mut p = 0usize;
-            while p < scan_end {
+            // Walk the buffer using Aho-Corasick SIMD multi-pattern search.
+            // Instead of checking every byte against the first-byte index, the
+            // AC automaton jumps directly to positions where a known magic
+            // prefix starts, using vectorised instructions (SSE2/AVX2).
+            let mut skip_until = 0usize;
+            for m in self.index.ac.find_overlapping_iter(&buf[..scan_end]) {
+                let match_start = m.start();
+                if match_start < skip_until {
+                    continue;
+                }
                 if cancel.is_cancelled() {
                     return Err(Error::Cancelled);
                 }
-                let candidates = self.index.candidates(buf[p]);
-                if candidates.is_empty() {
-                    p += 1;
+                let sig_id = self.index.ac_sig_ids[m.pattern().as_usize()];
+                let sig = &crate::signature::signatures()[sig_id as usize];
+                if !self.kind_enabled(sig.kind) {
                     continue;
                 }
-                let mut hit_len: Option<u64> = None;
-                let mut hit_kind: Option<FileKind> = None;
-                let mut hit_name: Option<&'static str> = None;
-                let mut hit_recoverability: u8 = 0;
-                let mut hit_abs_start: u64 = 0;
-                for &id in candidates {
-                    let sig = &crate::signature::signatures()[id as usize];
-                    if !self.kind_enabled(sig.kind) {
-                        continue;
-                    }
-                    // The candidate file starts at `p - candidate_offset_from_anchor`.
-                    let cof = sig.candidate_offset_from_anchor();
-                    if p < cof {
-                        continue;
-                    }
-                    let cstart = p - cof;
-                    if !sig.matches(&buf[..buf_len], cstart) {
-                        continue;
-                    }
-                    stats.candidates_examined += 1;
-                    let abs_start = buf_origin + cstart as u64;
-
-                    match self
-                        .try_validate(sig, abs_start, &buf[cstart..buf_len])
-                        .await?
-                    {
-                        Some((len, kind, recov)) => {
-                            if len >= self.config.min_carve_bytes {
-                                hit_len = Some(len);
-                                hit_kind = Some(kind);
-                                hit_name = Some(sig.name);
-                                hit_recoverability = recov;
-                                hit_abs_start = abs_start;
-                                stats.files_confirmed += 1;
-                                break; // first matching signature wins
-                            }
-                            stats.rejections += 1;
-                        }
-                        None => {
-                            stats.rejections += 1;
-                        }
-                    }
+                // AC matched at the anchor position; compute candidate start.
+                let cof = sig.candidate_offset_from_anchor();
+                if match_start < cof {
+                    continue;
                 }
+                let cstart = match_start - cof;
+                // Full magic match (verifies wildcard bytes that AC skipped).
+                if !sig.matches(&buf[..buf_len], cstart) {
+                    continue;
+                }
+                stats.candidates_examined += 1;
+                let abs_start = buf_origin + cstart as u64;
 
-                if let (Some(len), Some(kind), Some(name)) = (hit_len, hit_kind, hit_name) {
-                    let abs_start = hit_abs_start;
-                    let cf = CarvedFile {
-                        kind,
-                        offset_bytes: abs_start,
-                        length_bytes: len,
-                        signature: name.to_string(),
-                        recoverability: hit_recoverability,
-                    };
-                    if tx.send(cf).await.is_err() {
-                        // Receiver dropped — cancel the scan.
-                        return Ok(stats);
-                    }
-                    if self.config.skip_after_hit {
-                        // Move past the entire confirmed region.
-                        let abs_after = abs_start + len;
-                        // If the carved file extends beyond the current
-                        // buffer, advance buf_origin and refill.
-                        if abs_after >= buf_origin + buf_len as u64 {
-                            // Drop entire current buffer; reseed past abs_after.
-                            buf_origin = abs_after.min(end);
-                            buf_len = 0;
-                            break;
+                match self
+                    .try_validate(sig, abs_start, &buf[cstart..buf_len])
+                    .await?
+                {
+                    Some((len, kind, recov)) => {
+                        if len >= self.config.min_carve_bytes {
+                            let cf = CarvedFile {
+                                kind,
+                                offset_bytes: abs_start,
+                                length_bytes: len,
+                                signature: sig.name,
+                                recoverability: recov,
+                            };
+                            if tx.send(cf).await.is_err() {
+                                return Ok(stats);
+                            }
+                            stats.files_confirmed += 1;
+                            if self.config.skip_after_hit {
+                                let abs_after = abs_start + len;
+                                if abs_after >= buf_origin + buf_len as u64 {
+                                    buf_origin = abs_after.min(end);
+                                    buf_len = 0;
+                                    break;
+                                }
+                                skip_until = (abs_after - buf_origin) as usize;
+                            }
+                        } else {
+                            stats.rejections += 1;
                         }
-                        p = (abs_after - buf_origin) as usize;
-                    } else {
-                        p += 1;
                     }
-                } else {
-                    p += 1;
+                    None => {
+                        stats.rejections += 1;
+                    }
                 }
             }
 

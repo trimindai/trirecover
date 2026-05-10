@@ -20,6 +20,7 @@ mod windows;
 #[cfg(unix)]
 mod linux;
 mod fixture;
+mod mmap;
 
 #[cfg(windows)]
 pub use crate::windows::{enumerate_drives, open_drive};
@@ -28,5 +29,6 @@ pub use crate::linux::{enumerate_drives, open_drive};
 
 pub use drive::{Drive, DriveHandle};
 pub use fixture::FixtureReader;
+pub use mmap::MmapReader;
 pub use sector::{ReadOptions, SectorReader, SectorReaderExt};
 pub use smart::SmartProvider;

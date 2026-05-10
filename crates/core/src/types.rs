@@ -309,7 +309,7 @@ pub struct CarvedFile {
     pub kind: FileKind,
     pub offset_bytes: u64,
     pub length_bytes: u64,
-    pub signature: String,
+    pub signature: &'static str,
     pub recoverability: u8,
 }
 

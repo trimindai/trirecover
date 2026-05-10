@@ -12,7 +12,6 @@ use crate::smart::SmartProvider;
 use crate::{Drive, DriveHandle};
 use async_trait::async_trait;
 use chrono::Utc;
-use parking_lot::Mutex;
 use std::ffi::CString;
 use std::fs;
 use std::os::fd::RawFd;
@@ -206,7 +205,7 @@ unsafe impl Sync for OwnedFd {}
 #[derive(Debug)]
 pub struct LinuxRawReader {
     label: String,
-    fd: Mutex<OwnedFd>,
+    fd: OwnedFd,
     sector_size: u32,
     size_bytes: u64,
 }
@@ -215,7 +214,7 @@ impl LinuxRawReader {
     fn new(label: &str, fd: RawFd, sector_size: u32, size_bytes: u64) -> Self {
         Self {
             label: label.to_string(),
-            fd: Mutex::new(OwnedFd(fd)),
+            fd: OwnedFd(fd),
             sector_size,
             size_bytes,
         }
@@ -225,11 +224,11 @@ impl LinuxRawReader {
 #[async_trait]
 impl SectorReader for LinuxRawReader {
     async fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
-        let fd = self.fd.lock();
-        // SAFETY: pread is thread-safe; buf is a valid slice with known length.
+        // SAFETY: pread is thread-safe and does not use the file position
+        // pointer, so concurrent calls on the same fd are safe without a lock.
         let n = unsafe {
             libc::pread(
-                fd.0,
+                self.fd.0,
                 buf.as_mut_ptr() as *mut libc::c_void,
                 buf.len(),
                 offset as libc::off_t,
