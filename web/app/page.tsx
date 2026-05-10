@@ -1,5 +1,5 @@
 const RELEASES_URL = "https://github.com/trimindai/trirecover/releases/latest";
-const DIRECT_DOWNLOAD = "https://github.com/trimindai/trirecover/releases/latest/download/TriRecover_0.1.0_x64-setup.exe";
+const DIRECT_DOWNLOAD = "https://github.com/trimindai/trirecover/releases/latest/download/TriRecover_0.2.0_x64-setup.exe";
 const REPO_URL = "https://github.com/trimindai/trirecover";
 
 export default function Page() {
@@ -61,7 +61,7 @@ export default function Page() {
                 <DownloadIcon />
                 Download for Windows
                 <span className="rounded-md bg-white/15 px-2 py-0.5 text-xs font-medium text-white/90">
-                  v0.1.0
+                  v0.2.0
                 </span>
               </a>
               <a
@@ -285,7 +285,7 @@ function AppPreview() {
           <span className="h-3 w-3 rounded-full bg-[#f5b740]" />
           <span className="h-3 w-3 rounded-full bg-[#46c46f]" />
         </div>
-        <div className="text-xs text-muted">TriRecover v0.1.0</div>
+        <div className="text-xs text-muted">TriRecover v0.2.0</div>
         <div className="w-12" />
       </div>
 
@@ -297,7 +297,7 @@ function AppPreview() {
             </span>
             <div>
               <div className="text-sm font-semibold">TriRecover</div>
-              <div className="text-[11px] text-muted">v0.1.0</div>
+              <div className="text-[11px] text-muted">v0.2.0</div>
             </div>
           </div>
           <span className="rounded-full border border-[#2c5436] bg-[#1f3a25] px-2.5 py-0.5 text-[10px] font-bold tracking-widest text-success">
