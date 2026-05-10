@@ -122,19 +122,16 @@ pub(crate) fn read_u16_be(buf: &[u8], off: usize) -> Option<u16> {
     Some(u16::from_be_bytes(buf[off..end].try_into().ok()?))
 }
 
-/// Linear search for `needle` in `haystack[start..]`. Returns the absolute
-/// position of the match, or `None`.
+/// SIMD-accelerated search for `needle` in `haystack[start..]`. Returns the
+/// absolute position of the match, or `None`.
 pub(crate) fn find_from(haystack: &[u8], needle: &[u8], start: usize) -> Option<usize> {
     if needle.is_empty() || start >= haystack.len() || needle.len() > haystack.len() - start {
         return None;
     }
-    haystack[start..]
-        .windows(needle.len())
-        .position(|w| w == needle)
-        .map(|p| p + start)
+    memchr::memmem::find(&haystack[start..], needle).map(|p| p + start)
 }
 
-/// Linear search backwards for `needle` ending at or before `end`.
+/// SIMD-accelerated reverse search for `needle` ending at or before `end`.
 pub(crate) fn rfind_within(haystack: &[u8], needle: &[u8], end: usize) -> Option<usize> {
     if needle.is_empty() {
         return None;
@@ -143,7 +140,5 @@ pub(crate) fn rfind_within(haystack: &[u8], needle: &[u8], end: usize) -> Option
     if needle.len() > upper {
         return None;
     }
-    haystack[..upper]
-        .windows(needle.len())
-        .rposition(|w| w == needle)
+    memchr::memmem::rfind(&haystack[..upper], needle)
 }

@@ -147,8 +147,8 @@ async fn list_drives() -> Result<Vec<DriveEntry>, String> {
             serial: d.info.serial,
             size_bytes: d.info.size_bytes,
             sector_size: d.info.sector_size,
-            kind: format!("{:?}", d.info.kind),
-            bus: format!("{:?}", d.info.bus),
+            kind: d.info.kind.as_str().to_string(),
+            bus: d.info.bus.as_str().to_string(),
         })
         .collect())
 }
@@ -175,23 +175,29 @@ async fn scan_image(
     });
 
     let started = std::time::Instant::now();
-    let mut summaries: Vec<CarvedSummary> = Vec::new();
+    let mut summaries: Vec<CarvedSummary> = Vec::with_capacity(1024);
     let mut id_seq: u64 = 0;
     let mut bytes_recoverable: u64 = 0;
+    let mut last_emit = std::time::Instant::now();
     while let Some(c) = rx.recv().await {
         id_seq += 1;
         bytes_recoverable += c.length_bytes;
-        let _ = app.emit(
-            "scan/progress",
-            ScanProgressEvent {
-                bytes_scanned: c.offset_bytes + c.length_bytes,
-                bytes_total: total,
-                files_found: id_seq,
-            },
-        );
+        // Batch UI events: emit at most every 100ms or every 50 files
+        let now = std::time::Instant::now();
+        if id_seq % 50 == 0 || now.duration_since(last_emit).as_millis() >= 100 {
+            let _ = app.emit(
+                "scan/progress",
+                ScanProgressEvent {
+                    bytes_scanned: c.offset_bytes + c.length_bytes,
+                    bytes_total: total,
+                    files_found: id_seq,
+                },
+            );
+            last_emit = now;
+        }
         summaries.push(CarvedSummary {
             id: id_seq,
-            kind: format!("{:?}", c.kind),
+            kind: c.kind.as_str().to_string(),
             extension: c.kind.extension().to_string(),
             offset_bytes: c.offset_bytes,
             length_bytes: c.length_bytes,

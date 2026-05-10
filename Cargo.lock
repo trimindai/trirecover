@@ -4469,6 +4469,7 @@ dependencies = [
  "async-trait",
  "byteorder",
  "crc",
+ "memchr",
  "rayon",
  "tokio",
  "tr-core",

@@ -101,6 +101,37 @@ pub enum DriveBus {
     Unknown,
 }
 
+impl DriveKind {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Hdd => "Hdd",
+            Self::Ssd => "Ssd",
+            Self::Nvme => "Nvme",
+            Self::UsbFlash => "UsbFlash",
+            Self::SdCard => "SdCard",
+            Self::External => "External",
+            Self::Virtual => "Virtual",
+            Self::Unknown => "Unknown",
+        }
+    }
+}
+
+impl DriveBus {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Sata => "Sata",
+            Self::Nvme => "Nvme",
+            Self::Usb => "Usb",
+            Self::Sd => "Sd",
+            Self::Scsi => "Scsi",
+            Self::Virtual => "Virtual",
+            Self::Unknown => "Unknown",
+        }
+    }
+}
+
 // ---------------- SMART ----------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -312,6 +343,35 @@ pub enum FileKind {
 }
 
 impl FileKind {
+    /// Human-readable label (no heap allocation).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Jpg => "Jpg",
+            Self::Png => "Png",
+            Self::Gif => "Gif",
+            Self::Bmp => "Bmp",
+            Self::Tiff => "Tiff",
+            Self::Mp4 => "Mp4",
+            Self::Mov => "Mov",
+            Self::Mkv => "Mkv",
+            Self::Avi => "Avi",
+            Self::Pdf => "Pdf",
+            Self::Docx => "Docx",
+            Self::Xlsx => "Xlsx",
+            Self::Pptx => "Pptx",
+            Self::Zip => "Zip",
+            Self::Rar => "Rar",
+            Self::SevenZ => "SevenZ",
+            Self::Psd => "Psd",
+            Self::Ai => "Ai",
+            Self::Txt => "Txt",
+            Self::Csv => "Csv",
+            Self::Sql => "Sql",
+            Self::Other => "Other",
+        }
+    }
+
     #[must_use]
     pub fn extension(self) -> &'static str {
         match self {

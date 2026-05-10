@@ -177,6 +177,7 @@ impl Carver {
                 let mut hit_kind: Option<FileKind> = None;
                 let mut hit_name: Option<&'static str> = None;
                 let mut hit_recoverability: u8 = 0;
+                let mut hit_abs_start: u64 = 0;
                 for &id in candidates {
                     let sig = &crate::signature::signatures()[id as usize];
                     if !self.kind_enabled(sig.kind) {
@@ -204,6 +205,7 @@ impl Carver {
                                 hit_kind = Some(kind);
                                 hit_name = Some(sig.name);
                                 hit_recoverability = recov;
+                                hit_abs_start = abs_start;
                                 stats.files_confirmed += 1;
                                 break; // first matching signature wins
                             }
@@ -216,12 +218,7 @@ impl Carver {
                 }
 
                 if let (Some(len), Some(kind), Some(name)) = (hit_len, hit_kind, hit_name) {
-                    let abs_start = buf_origin + p as u64
-                        - crate::signature::signatures()
-                            .iter()
-                            .find(|s| s.name == name)
-                            .map(Signature::candidate_offset_from_anchor)
-                            .unwrap_or(0) as u64;
+                    let abs_start = hit_abs_start;
                     let cf = CarvedFile {
                         kind,
                         offset_bytes: abs_start,
@@ -339,8 +336,12 @@ impl Carver {
         if initial.len() >= max_window {
             return Ok(None);
         }
-        let mut window = Vec::with_capacity(max_window.min(self.config.initial_validation_window));
+        // Pre-allocate the window and a reusable read buffer to avoid
+        // per-iteration heap allocations.
+        let initial_cap = max_window.min(self.config.initial_validation_window);
+        let mut window = Vec::with_capacity(initial_cap);
         window.extend_from_slice(initial);
+        let mut tmp = vec![0u8; self.config.initial_validation_window];
         let mut size = self
             .config
             .initial_validation_window
@@ -348,9 +349,12 @@ impl Carver {
             .min(max_window);
         while size > window.len() {
             let need = size - window.len();
-            let mut tmp = vec![0u8; need];
+            // Grow tmp only if needed (rare: only when window doubles past initial)
+            if need > tmp.len() {
+                tmp.resize(need, 0);
+            }
             let read_off = cstart_abs + window.len() as u64;
-            let n = self.reader.read_at(read_off, &mut tmp).await?;
+            let n = self.reader.read_at(read_off, &mut tmp[..need]).await?;
             if n == 0 {
                 break;
             }
