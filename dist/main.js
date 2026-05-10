@@ -299,37 +299,97 @@
     renderFileTable();
   }
 
+  const ROW_HEIGHT = 44;
+  const SCROLL_BUFFER = 10;
+
+  function createFileRow(f) {
+    const tr = document.createElement("tr");
+    const checked = state.selected.has(f.id);
+    if (checked) tr.classList.add("checked");
+    tr.style.height = ROW_HEIGHT + "px";
+    tr.innerHTML = `
+      <td><input type="checkbox" data-id="${f.id}" ${checked ? "checked" : ""} /></td>
+      <td><span class="file-ext ${extClass(f.extension)}">${f.extension}</span></td>
+      <td>
+        <div class="file-name">${f.fileName}</div>
+        <div class="file-offset">Offset 0x${f.offset_bytes.toString(16).toUpperCase()} · ${f.signature}</div>
+      </td>
+      <td>${fmtBytes(f.length_bytes)}</td>
+      <td>
+        <span class="quality-dot ${f.quality.cls}"></span>
+        <span class="quality-text ${f.quality.cls}">${f.quality.label}</span>
+      </td>
+    `;
+    const cb = tr.querySelector("input");
+    cb.addEventListener("change", () => {
+      if (cb.checked) state.selected.add(f.id);
+      else state.selected.delete(f.id);
+      tr.classList.toggle("checked", cb.checked);
+      updateRecoverBar();
+    });
+    return tr;
+  }
+
   function renderFileTable() {
     const tbody = $("file-tbody");
-    tbody.innerHTML = "";
+    const wrap = document.querySelector(".file-list-wrap");
     $("no-results").hidden = state.filtered.length > 0;
 
-    for (const f of state.filtered) {
-      const tr = document.createElement("tr");
-      const checked = state.selected.has(f.id);
-      if (checked) tr.classList.add("checked");
-      tr.innerHTML = `
-        <td><input type="checkbox" data-id="${f.id}" ${checked ? "checked" : ""} /></td>
-        <td><span class="file-ext ${extClass(f.extension)}">${f.extension}</span></td>
-        <td>
-          <div class="file-name">${f.fileName}</div>
-          <div class="file-offset">Offset 0x${f.offset_bytes.toString(16).toUpperCase()} · ${f.signature}</div>
-        </td>
-        <td>${fmtBytes(f.length_bytes)}</td>
-        <td>
-          <span class="quality-dot ${f.quality.cls}"></span>
-          <span class="quality-text ${f.quality.cls}">${f.quality.label}</span>
-        </td>
-      `;
-      const cb = tr.querySelector("input");
-      cb.addEventListener("change", () => {
-        if (cb.checked) state.selected.add(f.id);
-        else state.selected.delete(f.id);
-        tr.classList.toggle("checked", cb.checked);
-        updateRecoverBar();
-      });
-      tbody.appendChild(tr);
+    // Clean up previous scroll handler
+    if (state._scrollHandler) {
+      wrap.removeEventListener("scroll", state._scrollHandler);
+      state._scrollHandler = null;
     }
+
+    if (state.filtered.length === 0) {
+      tbody.innerHTML = "";
+      updateRecoverBar();
+      return;
+    }
+
+    // Small lists: render all directly (no virtual scroll overhead)
+    if (state.filtered.length <= 200) {
+      tbody.innerHTML = "";
+      for (const f of state.filtered) {
+        tbody.appendChild(createFileRow(f));
+      }
+      updateRecoverBar();
+      return;
+    }
+
+    // Virtual scrolling for large lists — only render visible rows
+    let rafId = 0;
+    function renderVisible() {
+      const scrollTop = wrap.scrollTop;
+      const viewH = wrap.clientHeight;
+      const startIdx = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - SCROLL_BUFFER);
+      const endIdx = Math.min(state.filtered.length, Math.ceil((scrollTop + viewH) / ROW_HEIGHT) + SCROLL_BUFFER);
+
+      tbody.innerHTML = "";
+      // Top spacer
+      if (startIdx > 0) {
+        const sp = document.createElement("tr");
+        sp.innerHTML = `<td colspan="5" style="height:${startIdx * ROW_HEIGHT}px;padding:0;border:none"></td>`;
+        tbody.appendChild(sp);
+      }
+      for (let i = startIdx; i < endIdx; i++) {
+        tbody.appendChild(createFileRow(state.filtered[i]));
+      }
+      // Bottom spacer
+      const bottomRows = state.filtered.length - endIdx;
+      if (bottomRows > 0) {
+        const sp = document.createElement("tr");
+        sp.innerHTML = `<td colspan="5" style="height:${bottomRows * ROW_HEIGHT}px;padding:0;border:none"></td>`;
+        tbody.appendChild(sp);
+      }
+    }
+
+    renderVisible();
+    state._scrollHandler = () => {
+      cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(renderVisible);
+    };
+    wrap.addEventListener("scroll", state._scrollHandler);
     updateRecoverBar();
   }
 

@@ -71,11 +71,12 @@ impl Validator for JpegValidator {
                         return Validation::NeedsMore;
                     }
                     i = after_sos;
-                    // Scan entropy data: skip any byte except FF, and FF00/FFFFs
+                    // Scan entropy data: use SIMD-accelerated search for 0xFF
                     while i < w.len() {
-                        if w[i] != 0xFF {
-                            i += 1;
-                            continue;
+                        // memchr uses SIMD to skip non-0xFF bytes 10-30x faster
+                        match memchr::memchr(0xFF, &w[i..]) {
+                            None => { i = w.len(); break; }
+                            Some(pos) => { i += pos; }
                         }
                         // run of FFs
                         let mut j = i + 1;

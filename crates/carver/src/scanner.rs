@@ -89,21 +89,20 @@ impl CancelToken {
     }
 }
 
-/// The carver. Owns a reader and the signature index; thread-safe.
+/// The carver. Owns a reader and borrows the shared signature index; thread-safe.
 #[derive(Debug)]
 pub struct Carver {
     reader: Arc<dyn SectorReader>,
-    index: SignatureIndex,
+    index: &'static SignatureIndex,
     config: ScanConfig,
 }
 
 impl Carver {
     #[must_use]
     pub fn new(reader: Arc<dyn SectorReader>, config: ScanConfig) -> Self {
-        let index = SignatureIndex::build();
         Self {
             reader,
-            index,
+            index: crate::signature::shared_index(),
             config,
         }
     }

@@ -5,6 +5,8 @@
 //! that position — needed for formats like MP4 whose four-byte big-endian
 //! atom-size precedes the `ftyp` magic.
 
+use std::sync::OnceLock;
+
 use crate::validators::{
     self, BmpValidator, GifValidator, JpegValidator, MkvValidator, Mp4Validator, OoxmlValidator,
     PdfValidator, PngValidator, PsdValidator, RarValidator, RiffAviValidator, SevenZValidator,
@@ -230,6 +232,14 @@ const GIB: u64 = 1024 * MIB;
 #[must_use]
 pub fn signatures() -> &'static [Signature] {
     &SIGNATURES
+}
+
+static SHARED_INDEX: OnceLock<SignatureIndex> = OnceLock::new();
+
+/// Returns a lazily-initialized, shared signature index (built once per process).
+#[must_use]
+pub fn shared_index() -> &'static SignatureIndex {
+    SHARED_INDEX.get_or_init(SignatureIndex::build)
 }
 
 #[allow(clippy::declare_interior_mutable_const)]

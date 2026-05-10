@@ -2,6 +2,7 @@
 //! invoke handlers. The source drive is never written to.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -162,33 +163,71 @@ async fn scan_image(
 ) -> Result<Vec<CarvedSummary>, String> {
     let reader = open_source(&image_path)?;
     let total = reader.size_bytes();
+
+    // Adaptive chunk size: larger I/O for bigger sources reduces syscall overhead
+    let chunk_size = if total > 1024 * 1024 * 1024 {
+        16 * 1024 * 1024
+    } else {
+        8 * 1024 * 1024
+    };
+
     let cfg = ScanConfig {
+        chunk_size,
         min_carve_bytes: min_size,
         kinds: parse_kinds(&kinds),
         ..Default::default()
     };
-    let carver = Carver::new(reader.clone(), cfg);
-    let (tx, mut rx) = mpsc::channel(256);
+
+    let (tx, mut rx) = mpsc::channel(4096);
     let cancel = CancelToken::new();
-    let scan = tokio::spawn(async move {
-        carver.scan_range(0, total, tx, cancel).await
-    });
+
+    // Parallel scanning: split the range across workers for large sources.
+    // On SSD/NVMe this gives near-linear speedup; on HDD the I/O serializes
+    // naturally but CPU-bound validation still benefits.
+    let n_workers = if total > 256 * 1024 * 1024 {
+        std::thread::available_parallelism()
+            .map(|n| n.get().min(4))
+            .unwrap_or(2)
+    } else {
+        1
+    };
+
+    let carver = Arc::new(Carver::new(reader.clone(), cfg));
+    let region = total / n_workers as u64;
+    let mut scan_handles = Vec::with_capacity(n_workers);
+    for i in 0..n_workers {
+        let carver = carver.clone();
+        let tx = tx.clone();
+        let cancel = cancel.clone();
+        let start = i as u64 * region;
+        let end = if i == n_workers - 1 { total } else { (i as u64 + 1) * region };
+        scan_handles.push(tokio::spawn(async move {
+            carver.scan_range(start, end, tx, cancel).await
+        }));
+    }
+    drop(tx); // close sender so rx ends when all workers finish
 
     let started = std::time::Instant::now();
     let mut summaries: Vec<CarvedSummary> = Vec::with_capacity(1024);
     let mut id_seq: u64 = 0;
     let mut bytes_recoverable: u64 = 0;
     let mut last_emit = std::time::Instant::now();
+    let mut max_offset: u64 = 0;
     while let Some(c) = rx.recv().await {
         id_seq += 1;
         bytes_recoverable += c.length_bytes;
+        // Track max offset for monotonic progress (parallel workers report out of order)
+        let file_end = c.offset_bytes + c.length_bytes;
+        if file_end > max_offset {
+            max_offset = file_end;
+        }
         // Batch UI events: emit at most every 100ms or every 50 files
         let now = std::time::Instant::now();
         if id_seq % 50 == 0 || now.duration_since(last_emit).as_millis() >= 100 {
             let _ = app.emit(
                 "scan/progress",
                 ScanProgressEvent {
-                    bytes_scanned: c.offset_bytes + c.length_bytes,
+                    bytes_scanned: max_offset,
                     bytes_total: total,
                     files_found: id_seq,
                 },
@@ -205,10 +244,13 @@ async fn scan_image(
             signature: c.signature,
         });
     }
-    let _ = scan
-        .await
-        .map_err(|e| format!("scan task panicked: {e}"))?
-        .map_err(|e| format!("scan failed: {e}"))?;
+
+    for h in scan_handles {
+        h.await
+            .map_err(|e| format!("scan task panicked: {e}"))?
+            .map_err(|e| format!("scan failed: {e}"))?;
+    }
+
     let _ = app.emit(
         "scan/done",
         ScanDoneEvent {
@@ -236,6 +278,40 @@ struct RecoverResult {
     destination: String,
 }
 
+/// Stream a single file from the source to disk in 8 MiB chunks instead of
+/// loading the entire file into RAM (critical for multi-GB video recovery).
+async fn recover_one_streaming(
+    reader: Arc<dyn SectorReader>,
+    out_path: PathBuf,
+    offset: u64,
+    length: u64,
+) -> std::result::Result<u64, String> {
+    let mut f = tokio::fs::File::create(&out_path)
+        .await
+        .map_err(|e| format!("create: {e}"))?;
+    const BUF_SIZE: usize = 8 * 1024 * 1024;
+    let mut buf = vec![0u8; BUF_SIZE];
+    let mut remaining = length;
+    let mut pos = offset;
+    while remaining > 0 {
+        let to_read = (remaining as usize).min(BUF_SIZE);
+        let n = reader
+            .read_at(pos, &mut buf[..to_read])
+            .await
+            .map_err(|e| format!("read: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        f.write_all(&buf[..n])
+            .await
+            .map_err(|e| format!("write: {e}"))?;
+        pos += n as u64;
+        remaining -= n as u64;
+    }
+    f.flush().await.map_err(|e| format!("flush: {e}"))?;
+    Ok(length - remaining)
+}
+
 #[tauri::command]
 async fn recover_files(
     image_path: String,
@@ -246,45 +322,52 @@ async fn recover_files(
     std::fs::create_dir_all(&dest).map_err(|e| format!("create dest dir: {e}"))?;
     let reader = open_source(&image_path)?;
 
-    let mut written = 0u64;
-    let mut failed = 0u64;
-    let mut bytes_written = 0u64;
+    let written = Arc::new(AtomicU64::new(0));
+    let failed = Arc::new(AtomicU64::new(0));
+    let bytes_written = Arc::new(AtomicU64::new(0));
+    // Limit concurrency to 8 parallel file writes
+    let sem = Arc::new(tokio::sync::Semaphore::new(8));
+
+    let mut handles = Vec::with_capacity(items.len());
     for item in items {
-        let name = format!(
-            "{:08}_{:016x}.{}",
-            item.id, item.offset_bytes, item.extension
-        );
-        let out_path = dest.join(&name);
-        let bytes = match reader.read_vec(item.offset_bytes, item.length_bytes as usize).await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(target: "trirecover", "read failed for {name}: {e}");
-                failed += 1;
-                continue;
-            }
-        };
-        match tokio::fs::File::create(&out_path).await {
-            Ok(mut f) => {
-                if let Err(e) = f.write_all(&bytes).await {
-                    tracing::warn!(target: "trirecover", "write failed for {name}: {e}");
-                    failed += 1;
-                    continue;
+        let reader = reader.clone();
+        let dest = dest.clone();
+        let sem = sem.clone();
+        let written = written.clone();
+        let failed = failed.clone();
+        let bytes_written = bytes_written.clone();
+
+        handles.push(tokio::spawn(async move {
+            let _permit = sem.acquire().await.expect("semaphore closed");
+            let name = format!(
+                "{:08}_{:016x}.{}",
+                item.id, item.offset_bytes, item.extension
+            );
+            let out_path = dest.join(&name);
+
+            match recover_one_streaming(reader, out_path, item.offset_bytes, item.length_bytes)
+                .await
+            {
+                Ok(n) => {
+                    written.fetch_add(1, Ordering::Relaxed);
+                    bytes_written.fetch_add(n, Ordering::Relaxed);
                 }
-                let _ = f.flush().await;
-                bytes_written += bytes.len() as u64;
-                written += 1;
+                Err(e) => {
+                    tracing::warn!(target: "trirecover", "recovery failed for {name}: {e}");
+                    failed.fetch_add(1, Ordering::Relaxed);
+                }
             }
-            Err(e) => {
-                tracing::warn!(target: "trirecover", "create failed for {name}: {e}");
-                failed += 1;
-            }
-        }
+        }));
+    }
+
+    for h in handles {
+        let _ = h.await;
     }
 
     Ok(RecoverResult {
-        written,
-        failed,
-        bytes_written,
+        written: written.load(Ordering::Relaxed),
+        failed: failed.load(Ordering::Relaxed),
+        bytes_written: bytes_written.load(Ordering::Relaxed),
         destination: dest.to_string_lossy().to_string(),
     })
 }
