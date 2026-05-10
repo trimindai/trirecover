@@ -4473,7 +4473,7 @@ checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
 
 [[package]]
 name = "tr-carver"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aho-corasick",
  "async-trait",
@@ -4489,7 +4489,7 @@ dependencies = [
 
 [[package]]
 name = "tr-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "parking_lot",
@@ -4507,7 +4507,7 @@ dependencies = [
 
 [[package]]
 name = "tr-filesystem"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "byteorder",
@@ -4521,7 +4521,7 @@ dependencies = [
 
 [[package]]
 name = "tr-partition"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "byteorder",
@@ -4536,7 +4536,7 @@ dependencies = [
 
 [[package]]
 name = "tr-recovery-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "tr-core",
  "tr-filesystem",
@@ -4546,7 +4546,7 @@ dependencies = [
 
 [[package]]
 name = "tr-storage"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4674,7 +4674,7 @@ dependencies = [
 
 [[package]]
 name = "trirecover-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -4694,7 +4694,7 @@ dependencies = [
 
 [[package]]
 name = "trirecover-carve"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "tokio",
