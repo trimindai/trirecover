@@ -29,7 +29,7 @@ pub mod scanner;
 pub mod signature;
 pub mod validators;
 
-pub use scanner::{Carver, ScanConfig, ScanStats};
+pub use scanner::{CancelToken, Carver, ScanConfig, ScanStats};
 pub use signature::{Signature, SignatureId, signatures};
 pub use validators::Validator;
 

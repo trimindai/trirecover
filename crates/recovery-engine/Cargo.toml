@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "TriRecover scan strategies, async job manager, sessions. Stub — implementation pending."
+description = "TriRecover scan strategies, async job manager, recovery writer, sessions."
 
 [lib]
 name = "tr_recovery_engine"
@@ -16,3 +16,20 @@ tr-core.workspace = true
 tr-storage.workspace = true
 tr-partition.workspace = true
 tr-filesystem.workspace = true
+tr-carver.workspace = true
+
+tokio.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+rayon.workspace = true
+crossbeam-channel.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = "3"

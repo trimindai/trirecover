@@ -4,11 +4,13 @@
 //! No other workspace crate may depend on a higher layer; everything imports
 //! from here downward. See `docs/architecture.md`.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 #![deny(missing_debug_implementations)]
 #![warn(clippy::all, clippy::pedantic)]
 #![allow(clippy::module_name_repetitions, clippy::missing_errors_doc)]
 
+#[allow(unsafe_code)]
+pub mod cloud;
 pub mod config;
 pub mod db;
 pub mod error;
@@ -16,11 +18,12 @@ pub mod logging;
 pub mod types;
 
 pub use error::{Error, Result};
+pub use cloud::{CloudDestination, CloudProvider};
 pub use types::{
     CarvedFile, DataRun, DriveBus, DriveInfo, DriveKind, FileCategory, FileKind, FileRecord,
-    FileSource, JobId, JobState, PartitionInfo, PartitionScheme, RecoverFailure, RecoverReport,
-    RecoverRequest, RecoveryStrategy, ScanProgress, ScanRequest, SessionId, SmartAttribute,
-    SmartHealth, SmartReport,
+    FileSource, JobId, JobState, PartitionInfo, PartitionScheme, RecoverDestination,
+    RecoverFailure, RecoverReport, RecoverRequest, RecoveryStrategy, ScanProgress, ScanRequest,
+    SessionId, SmartAttribute, SmartHealth, SmartReport,
 };
 
 /// Crate version, exposed for telemetry and the about-box.

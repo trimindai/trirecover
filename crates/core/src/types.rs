@@ -51,6 +51,12 @@ impl Default for SessionId {
     }
 }
 
+impl std::fmt::Display for SessionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 // ---------------- Drive ----------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -434,11 +440,45 @@ pub enum FileCategory {
 pub struct RecoverRequest {
     pub session_id: SessionId,
     pub file_ids: Vec<u64>,
-    pub destination: PathBuf,
+    pub destination: RecoverDestination,
     /// If true, preserve original directory layout under `destination`.
     pub preserve_paths: bool,
     /// If true, run per-file integrity validation after writing.
     pub verify: bool,
+}
+
+/// Where to write recovered files.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum RecoverDestination {
+    /// A local directory path chosen by the user.
+    Local { path: PathBuf },
+    /// A cloud-synced folder (OneDrive, Google Drive, Dropbox).
+    /// The engine writes to `cloud_local_path/TriRecover Recovery/` and the
+    /// sync client uploads. The UI resolves this from [`crate::cloud::CloudDestination`].
+    Cloud {
+        provider: String,
+        cloud_local_path: PathBuf,
+    },
+}
+
+impl RecoverDestination {
+    /// Resolve to the actual filesystem path where bytes will be written.
+    #[must_use]
+    pub fn resolve_path(&self) -> PathBuf {
+        match self {
+            Self::Local { path } => path.clone(),
+            Self::Cloud { cloud_local_path, .. } => {
+                cloud_local_path.join("TriRecover Recovery")
+            }
+        }
+    }
+
+    /// Returns true if this is a cloud destination.
+    #[must_use]
+    pub fn is_cloud(&self) -> bool {
+        matches!(self, Self::Cloud { .. })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

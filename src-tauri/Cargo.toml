@@ -27,6 +27,9 @@ tauri-plugin-shell = "2"
 tr-core.workspace = true
 tr-carver.workspace = true
 tr-storage.workspace = true
+tr-recovery-engine.workspace = true
+tr-partition.workspace = true
+tr-filesystem.workspace = true
 
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "fs", "io-util", "sync"] }
 serde.workspace = true

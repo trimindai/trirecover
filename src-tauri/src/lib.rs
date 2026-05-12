@@ -1,5 +1,6 @@
-//! TriRecover desktop shell. Wires the carver to the frontend via Tauri
-//! invoke handlers. The source drive is never written to.
+//! TriRecover desktop shell. Wires the recovery engine, carver, and filesystem
+//! parsers to the frontend via Tauri invoke handlers. The source drive is never
+//! written to.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -11,8 +12,14 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tr_carver::scanner::CancelToken;
 use tr_carver::{Carver, ScanConfig};
-use tr_core::FileKind;
+use tr_core::{
+    CloudDestination, FileKind, JobId, JobState, RecoverDestination, RecoveryStrategy,
+    ScanProgress, ScanRequest, SessionId,
+};
+use tr_recovery_engine::JobManager;
 use tr_storage::{enumerate_drives, open_drive, MmapReader, SectorReader, SectorReaderExt};
+
+// ------------------------------------------------------------------ types
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct CarvedSummary {
@@ -49,6 +56,36 @@ struct DriveEntry {
     kind: String,
     bus: String,
 }
+
+#[derive(Debug, Serialize, Clone)]
+struct PartitionEntry {
+    index: u32,
+    scheme: String,
+    type_id: String,
+    name: Option<String>,
+    filesystem: Option<String>,
+    start_lba: u64,
+    length_sectors: u64,
+    sector_size: u32,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct JobInfo {
+    job_id: String,
+    session_id: String,
+    state: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct CloudDest {
+    provider: String,
+    label: String,
+    local_path: String,
+    free_bytes: Option<u64>,
+    sync_active: bool,
+}
+
+// ------------------------------------------------------------------ helpers
 
 fn parse_kinds(kinds: &[String]) -> Option<Vec<FileKind>> {
     if kinds.is_empty() {
@@ -88,10 +125,31 @@ fn parse_kinds(kinds: &[String]) -> Option<Vec<FileKind>> {
     }
 }
 
+fn parse_strategy(s: &str) -> RecoveryStrategy {
+    match s.to_ascii_lowercase().as_str() {
+        "quick" => RecoveryStrategy::Quick,
+        "deep" => RecoveryStrategy::Deep,
+        "raw" => RecoveryStrategy::Raw,
+        "partition" => RecoveryStrategy::Partition,
+        "formatted" => RecoveryStrategy::Formatted,
+        "corrupted" | "corrupted-fs" | "corruptedfs" => RecoveryStrategy::CorruptedFs,
+        _ => RecoveryStrategy::Deep,
+    }
+}
+
+fn state_str(s: JobState) -> &'static str {
+    match s {
+        JobState::Queued => "queued",
+        JobState::Running => "running",
+        JobState::Paused => "paused",
+        JobState::Finished => "finished",
+        JobState::Failed => "failed",
+        JobState::Cancelled => "cancelled",
+    }
+}
+
 /// Returns true if the path looks like a physical drive path rather than a file.
 fn is_drive_path(path: &str) -> bool {
-    // Windows: \\.\PhysicalDrive0, \\.\PhysicalDrive1, etc.
-    // Linux: /dev/sda, /dev/nvme0n1, etc.
     path.starts_with(r"\\.\PhysicalDrive")
         || path.starts_with("/dev/sd")
         || path.starts_with("/dev/nvme")
@@ -112,12 +170,11 @@ fn open_source(path: &str) -> Result<Arc<dyn SectorReader>, String> {
     }
 }
 
-// ---------- Tauri commands ----------
+// ================================================================== commands
+// === Drive / partition discovery ===
 
 #[tauri::command]
 async fn list_drives() -> Result<Vec<DriveEntry>, String> {
-    // enumerate_drives() does blocking I/O (CreateFileW on \\.\PhysicalDriveN).
-    // Run on the blocking thread pool with a timeout so the UI never hangs.
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         tokio::task::spawn_blocking(|| enumerate_drives()),
@@ -155,6 +212,163 @@ async fn list_drives() -> Result<Vec<DriveEntry>, String> {
 }
 
 #[tauri::command]
+async fn list_partitions(drive_path: String) -> Result<Vec<PartitionEntry>, String> {
+    let reader = open_source(&drive_path)?;
+    let parts = tr_partition::read_table(reader.as_ref())
+        .await
+        .map_err(|e| format!("read partition table: {e}"))?;
+    Ok(parts
+        .into_iter()
+        .map(|p| PartitionEntry {
+            index: p.index,
+            scheme: format!("{:?}", p.scheme).to_lowercase(),
+            type_id: p.type_id,
+            name: p.name,
+            filesystem: p.filesystem,
+            start_lba: p.start_lba,
+            length_sectors: p.length_sectors,
+            sector_size: p.sector_size,
+        })
+        .collect())
+}
+
+#[tauri::command]
+async fn detect_filesystem(drive_path: String, partition_index: u32) -> Result<String, String> {
+    let reader = open_source(&drive_path)?;
+    let parts = tr_partition::read_table(reader.as_ref())
+        .await
+        .map_err(|e| format!("read partition table: {e}"))?;
+    let part = parts
+        .iter()
+        .find(|p| p.index == partition_index)
+        .ok_or_else(|| format!("partition {partition_index} not found"))?;
+    let fs = tr_filesystem::detect(reader.as_ref(), part)
+        .await
+        .map_err(|e| format!("detect fs: {e}"))?;
+    Ok(fs.name().to_string())
+}
+
+// === Cloud destination detection ===
+
+#[tauri::command]
+async fn detect_cloud_destinations() -> Result<Vec<CloudDest>, String> {
+    let dests = tokio::task::spawn_blocking(tr_core::cloud::detect_all)
+        .await
+        .map_err(|e| format!("cloud detection: {e}"))?;
+    Ok(dests
+        .into_iter()
+        .map(|d| CloudDest {
+            provider: format!("{:?}", d.provider),
+            label: d.label,
+            local_path: d.local_path.to_string_lossy().to_string(),
+            free_bytes: d.free_bytes,
+            sync_active: d.sync_active,
+        })
+        .collect())
+}
+
+// === Strategy-based scan (recovery engine) ===
+
+#[tauri::command]
+async fn start_scan(
+    app: tauri::AppHandle,
+    drive_path: String,
+    strategy: String,
+    partitions: Vec<u32>,
+    file_kinds: Vec<String>,
+    min_size: u64,
+) -> Result<String, String> {
+    let mgr = app.state::<JobManager>();
+    let request = ScanRequest {
+        drive_path,
+        strategy: parse_strategy(&strategy),
+        partitions,
+        file_kinds: parse_kinds(&file_kinds).unwrap_or_default(),
+        min_carve_bytes: min_size,
+        resume_session: None,
+    };
+    let job_id = mgr.start_scan(request);
+    Ok(job_id.to_string())
+}
+
+#[tauri::command]
+async fn scan_status(app: tauri::AppHandle, job_id: String) -> Result<JobInfo, String> {
+    let mgr = app.state::<JobManager>();
+    let id: JobId = parse_job_id(&job_id)?;
+    let state = mgr
+        .job_state(id)
+        .ok_or_else(|| format!("job {job_id} not found"))?;
+    Ok(JobInfo {
+        job_id: job_id.clone(),
+        session_id: String::new(),
+        state: state_str(state).to_string(),
+    })
+}
+
+#[tauri::command]
+async fn scan_progress(app: tauri::AppHandle, job_id: String) -> Result<Vec<ScanProgress>, String> {
+    let mgr = app.state::<JobManager>();
+    let id = parse_job_id(&job_id)?;
+    Ok(mgr.drain_progress(id))
+}
+
+#[tauri::command]
+async fn scan_files(
+    app: tauri::AppHandle,
+    job_id: String,
+) -> Result<Vec<serde_json::Value>, String> {
+    let mgr = app.state::<JobManager>();
+    let id = parse_job_id(&job_id)?;
+    let files = mgr.drain_files(id);
+    files
+        .into_iter()
+        .map(|f| serde_json::to_value(f).map_err(|e| format!("serialize: {e}")))
+        .collect()
+}
+
+#[tauri::command]
+async fn pause_scan(app: tauri::AppHandle, job_id: String) -> Result<(), String> {
+    let mgr = app.state::<JobManager>();
+    let id = parse_job_id(&job_id)?;
+    mgr.pause(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn resume_scan(app: tauri::AppHandle, job_id: String) -> Result<(), String> {
+    let mgr = app.state::<JobManager>();
+    let id = parse_job_id(&job_id)?;
+    mgr.resume(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn cancel_scan(app: tauri::AppHandle, job_id: String) -> Result<(), String> {
+    let mgr = app.state::<JobManager>();
+    let id = parse_job_id(&job_id)?;
+    mgr.cancel(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn list_jobs(app: tauri::AppHandle) -> Result<Vec<JobInfo>, String> {
+    let mgr = app.state::<JobManager>();
+    Ok(mgr
+        .active_jobs()
+        .into_iter()
+        .map(|(jid, sid, state)| JobInfo {
+            job_id: jid.to_string(),
+            session_id: sid.to_string(),
+            state: state_str(state).to_string(),
+        })
+        .collect())
+}
+
+fn parse_job_id(s: &str) -> Result<JobId, String> {
+    let uuid = uuid::Uuid::parse_str(s).map_err(|e| format!("invalid job id: {e}"))?;
+    Ok(JobId(uuid))
+}
+
+// === Raw carver scan (direct, for disk images) ===
+
+#[tauri::command]
 async fn scan_image(
     app: tauri::AppHandle,
     image_path: String,
@@ -164,7 +378,6 @@ async fn scan_image(
     let reader = open_source(&image_path)?;
     let total = reader.size_bytes();
 
-    // Adaptive chunk size: larger I/O for bigger sources reduces syscall overhead
     let chunk_size = if total > 1024 * 1024 * 1024 {
         16 * 1024 * 1024
     } else {
@@ -181,9 +394,6 @@ async fn scan_image(
     let (tx, mut rx) = mpsc::channel(4096);
     let cancel = CancelToken::new();
 
-    // Parallel scanning: split the range across workers for large sources.
-    // On SSD/NVMe this gives near-linear speedup; on HDD the I/O serializes
-    // naturally but CPU-bound validation still benefits.
     let n_workers = if total > 256 * 1024 * 1024 {
         std::thread::available_parallelism()
             .map(|n| n.get().min(8))
@@ -200,12 +410,16 @@ async fn scan_image(
         let tx = tx.clone();
         let cancel = cancel.clone();
         let start = i as u64 * region;
-        let end = if i == n_workers - 1 { total } else { (i as u64 + 1) * region };
+        let end = if i == n_workers - 1 {
+            total
+        } else {
+            (i as u64 + 1) * region
+        };
         scan_handles.push(tokio::spawn(async move {
             carver.scan_range(start, end, tx, cancel).await
         }));
     }
-    drop(tx); // close sender so rx ends when all workers finish
+    drop(tx);
 
     let started = std::time::Instant::now();
     let mut summaries: Vec<CarvedSummary> = Vec::with_capacity(1024);
@@ -216,12 +430,10 @@ async fn scan_image(
     while let Some(c) = rx.recv().await {
         id_seq += 1;
         bytes_recoverable += c.length_bytes;
-        // Track max offset for monotonic progress (parallel workers report out of order)
         let file_end = c.offset_bytes + c.length_bytes;
         if file_end > max_offset {
             max_offset = file_end;
         }
-        // Batch UI events: emit at most every 100ms or every 50 files
         let now = std::time::Instant::now();
         if id_seq % 50 == 0 || now.duration_since(last_emit).as_millis() >= 100 {
             let _ = app.emit(
@@ -262,6 +474,8 @@ async fn scan_image(
     Ok(summaries)
 }
 
+// === File recovery ===
+
 #[derive(Debug, Deserialize)]
 struct RecoverItem {
     offset_bytes: u64,
@@ -278,8 +492,6 @@ struct RecoverResult {
     destination: String,
 }
 
-/// Stream a single file from the source to disk in 8 MiB chunks instead of
-/// loading the entire file into RAM (critical for multi-GB video recovery).
 async fn recover_one_streaming(
     reader: Arc<dyn SectorReader>,
     out_path: PathBuf,
@@ -325,7 +537,6 @@ async fn recover_files(
     let written = Arc::new(AtomicU64::new(0));
     let failed = Arc::new(AtomicU64::new(0));
     let bytes_written = Arc::new(AtomicU64::new(0));
-    // Limit concurrency to 8 parallel file writes
     let sem = Arc::new(tokio::sync::Semaphore::new(8));
 
     let mut handles = Vec::with_capacity(items.len());
@@ -372,10 +583,36 @@ async fn recover_files(
     })
 }
 
+// === Meta ===
+
 #[tauri::command]
 fn app_version() -> String {
-    env!("CARGO_PKG_VERSION").to_string()
+    tr_core::VERSION.to_string()
 }
+
+#[tauri::command]
+fn strategy_info() -> Vec<serde_json::Value> {
+    use tr_recovery_engine::strategies;
+    [
+        RecoveryStrategy::Quick,
+        RecoveryStrategy::Deep,
+        RecoveryStrategy::Raw,
+        RecoveryStrategy::Partition,
+        RecoveryStrategy::Formatted,
+        RecoveryStrategy::CorruptedFs,
+    ]
+    .into_iter()
+    .map(|s| {
+        serde_json::json!({
+            "id": format!("{s:?}").to_lowercase(),
+            "description": strategies::description(s),
+            "speed": strategies::speed_rating(s),
+        })
+    })
+    .collect()
+}
+
+// ================================================================== app
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -388,14 +625,32 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
+        .manage(JobManager::new())
         .invoke_handler(tauri::generate_handler![
+            // Drive / partition
             list_drives,
+            list_partitions,
+            detect_filesystem,
+            // Cloud
+            detect_cloud_destinations,
+            // Strategy scan (recovery engine)
+            start_scan,
+            scan_status,
+            scan_progress,
+            scan_files,
+            pause_scan,
+            resume_scan,
+            cancel_scan,
+            list_jobs,
+            // Raw carver (direct)
             scan_image,
+            // Recovery
             recover_files,
-            app_version
+            // Meta
+            app_version,
+            strategy_info,
         ])
         .setup(|app| {
-            // Bring the main window to front on launch.
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.show();
                 let _ = win.set_focus();
