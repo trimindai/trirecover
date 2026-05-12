@@ -304,11 +304,12 @@ fn close_reg_key(key: ::windows::Win32::System::Registry::HKEY) {
 #[cfg(windows)]
 fn read_reg_string(key: ::windows::Win32::System::Registry::HKEY, name: &str) -> Option<String> {
     use ::windows::core::PCSTR;
+    use ::windows::Win32::System::Registry::REG_VALUE_TYPE;
     use std::ffi::CString;
     let cs = CString::new(name).ok()?;
     let mut buf = vec![0u8; 1024];
     let mut len = buf.len() as u32;
-    let mut kind = 0u32;
+    let mut kind = REG_VALUE_TYPE(0);
     let status = unsafe {
         ::windows::Win32::System::Registry::RegQueryValueExA(
             key,
@@ -319,7 +320,7 @@ fn read_reg_string(key: ::windows::Win32::System::Registry::HKEY, name: &str) ->
             Some(&mut len),
         )
     };
-    if status.is_ok() && kind == 1 { // REG_SZ
+    if status.is_ok() && kind.0 == 1 { // REG_SZ
         let s = String::from_utf8_lossy(&buf[..len as usize]);
         Some(s.trim_end_matches('\0').to_string())
     } else {
